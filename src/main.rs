@@ -1,6 +1,6 @@
 mod config_manager;
 mod api_client;
-mod executor;
+mod worker;
 
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
@@ -10,7 +10,7 @@ use colored::*;
 use crate::api_client::ChatMessage;
 use api_client::ApiClient;
 use crate::config_manager::*;
-use crate::executor::*;
+use crate::worker::*;
 
 // 定义线程间传输的消息类型
 enum AppMessage {
@@ -59,6 +59,7 @@ fn listen(receiver: &Receiver<AppMessage>) -> Result<String, Box<dyn std::error:
     Ok(full_msg)
 }
 
+#[cfg(unix)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     print_logo();
 
@@ -93,50 +94,66 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut rl = DefaultEditor::new()?;
 
     loop {
-        // 1. 获取用户输入
         let readline = rl.readline(&format!("{}", "🦀 > ".bright_red()));
         let line = match readline {
             Ok(line) => {
                 rl.add_history_entry(line.as_str())?;
                 line
             },
-            Err(_) => break, // 退出
+            Err(_) => break,
         };
 
-        // 2. 进入“自动迭代”闭环
-        let mut next_input = Some(line);
+        // 状态变量：控制自主循环
+        let mut next_input_to_ai = Some(line);
 
-        while let Some(current_query) = next_input {
-            // 发送给 IO 线程（记得要在 IO 线程处理 ExecResult，见下文）
-            tx_to_io.send(AppMessage::UserQuery(current_query))?;
+        while let Some(current_query) = &next_input_to_ai {
+            // 1. 发送消息（用户输入或上一次的执行结果）
+            tx_to_io.send(AppMessage::UserQuery(current_query.to_string()))?;
 
-            // 监听 AI 说话
+            // 2. 等待并打印 AI 回复
+            println!("\n{} ", "Agent:".bright_cyan());
             let full_msg = listen(&rx_from_io)?;
+            println!();
 
-            // 尝试解析工具调用
-            if let Some(call) = parse_tool_call(full_msg) {
+            let tool_call = parse_tool_call(full_msg);
+
+            // 3. 尝试解析工具调用
+            if let Some(call) = tool_call {
                 match call.tool {
                     Tool::Exec => {
-                        // 构造反馈给 AI 的上下文
-                        let result_for_ai = format!(
-                            "--- [ exec_result ] ---\n{}-----------------------",
-                            call.result
-                        );
-                        println!("\n{}", "[系统]: 已自动将执行结果反馈给 AI...".bright_black());
+                        if confirm(&mut rl) {
+                            let result_feedback = format!(
+                                "--- [ exec_result ] ---\n{}-----------------------",
+                                exec_cmd(call.content)
+                            );
 
-                        // 关键：设置下一次循环的内容，不再经过 readline
-                        next_input = Some(result_for_ai);
+                            println!("{}", "[系统]: 命令已执行，正在自动反馈给 AI...".bright_black());
+                            next_input_to_ai = Some(result_feedback); // 触发下一轮 while 循环
+                        } else {
+                            next_input_to_ai = None;
+                            println!();
+                        }
                     }
-                    _ => next_input = None,
+                    _ => { next_input_to_ai = None; println!(); }
                 }
-            } else {
-                // 没有工具调用了，彻底结束这一轮，回到顶层 loop 让用户输入
-                next_input = None;
-            }
+            } else { next_input_to_ai = None; println!() }
         }
     }
 
     Ok(())
+}
+
+pub fn confirm(rl: &mut DefaultEditor) -> bool {
+    loop {
+        let readline = rl.readline(&format!("{}", "\n🦀请审查是否进行此操作 [y/n]> ".bright_red()));
+        if let Ok(line) = readline {
+            if line.trim() == "y" {
+                return true
+            } else if line.trim() == "n" {
+                return false
+            }
+        } else { std::process::exit(0) }
+    }
 }
 
 fn print_logo() {
