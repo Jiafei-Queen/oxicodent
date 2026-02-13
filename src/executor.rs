@@ -1,32 +1,61 @@
 use std::process::Command;
 
-pub fn parse_and_exec_cmd(msg: String) -> Option<String>{
-    // 解析 命令执行 代码块
-    let mut is_exec = false;
-    let mut cmd: Option<String> = None;
+fn exec_cmd(cmd: String) -> String {
+    let output = if cfg!(target_os = "windows") {
+        Command::new("cmd")
+            .args(["/C", cmd.as_str()])
+            .output()
+            .expect("failed to execute process")
+    } else {
+        Command::new("sh")
+            .arg("-c")
+            .arg(cmd.as_str())
+            .output()
+            .expect("failed to execute process")
+    };
+
+    let result = String::from_utf8_lossy(&output.stdout).to_string();
+    result
+}
+
+pub enum Tool {
+    Exec,
+    Write(String),
+    Read([usize;2]),
+    Diff(String),
+    Remem(usize)
+}
+
+pub struct Call {
+    pub tool: Tool,
+    pub result: String,
+}
+
+pub fn parse_tool_call(msg: String) -> Option<Call> {
+    let mut tool_call: Option<Tool> = None;
+    let mut content = String::new();
     for line in msg.lines() {
-        if line.replace(" ", "") == "```exec" { is_exec = true; continue; }
-        if line.replace(" ", "") == "```" { break; }
-        if is_exec {
-            match cmd {
-                None => { cmd = Some(line.to_string()) },
-                Some(s) => {
-                    let new_cmd = format!("{}\n{}",s, line);
-                    cmd = Some(new_cmd);
+        match line.trim() {
+            "```exec" => { tool_call = Some(Tool::Exec); continue; }
+            "```" => { break; }
+            _ => {}
+        }
+
+        if let Some(_) = tool_call {
+            content.push_str(format!("{}\n", line).as_str())
+        }
+    }
+
+    match tool_call {
+        None => { None }
+        Some(tool) => {
+            match tool {
+                Tool::Exec => {
+                    let result = exec_cmd(content);
+                    Some(Call { tool, result })
                 }
+                _ => { None }
             }
         }
     }
-
-    if let Some(output) = cmd {
-        println!("\n\n[DEBUG]: 成功截获命令: {}", output);
-        let output = Command::new("sh").arg("-c").arg(output).output();
-        if let Ok(out) = output {
-            let result = String::from_utf8_lossy(&out.stdout).to_string();
-            println!("[DEBUG]: 执行结果: {}", &result);
-            return Some(result);
-        }
-    }
-
-    None
 }

@@ -2,20 +2,61 @@ mod config_manager;
 mod api_client;
 mod executor;
 
-use api_client::ApiClient;
-use crate::config_manager::*;
 use std::sync::mpsc;
+use std::sync::mpsc::Receiver;
 use std::thread;
 use rustyline::DefaultEditor;
 use colored::*;
 use crate::api_client::ChatMessage;
+use api_client::ApiClient;
+use crate::config_manager::*;
+use crate::executor::*;
 
 // 定义线程间传输的消息类型
 enum AppMessage {
     UserQuery(String),      // 用户输入
     ModelChunk(String),     // 模型返回的文本片段
     SystemLog(String),      // 系统通知
-    TaskComplete   // 任务结束
+    TaskComplete            // 任务结束
+}
+
+fn skip_recv(receiver: &Receiver<AppMessage>) {
+    loop {
+        if let Ok(msg) = receiver.recv() {
+            match msg {
+                AppMessage::TaskComplete => break,
+                _ => {}
+            }
+        }
+    }
+}
+
+fn listen(receiver: &Receiver<AppMessage>) -> Result<String, Box<dyn std::error::Error>> {
+    let mut full_msg = String::new();
+
+    loop {
+        if let Ok(msg) = receiver.recv() {
+            match msg {
+                AppMessage::ModelChunk(chunk) => {
+                    // 拼凑完整消息 用作命令解析
+                    full_msg.push_str(chunk.as_str());
+
+                    // 将消息立刻输出到控制台
+                    print!("{}", chunk.white());
+                    std::io::Write::flush(&mut std::io::stdout())?;
+                },
+
+                AppMessage::SystemLog(log) => {
+                    eprintln!("\n[ERROR]: {}", log)
+                },
+
+                AppMessage::TaskComplete => break,
+                _ => {}
+            }
+        }
+    }
+
+    Ok(full_msg)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -23,7 +64,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (tx_to_io, rx_from_ui) = mpsc::channel::<AppMessage>();
     let (tx_to_ui, rx_from_io) = mpsc::channel::<AppMessage>();
-    let client = ApiClient::new(&Config::load_or_init());
+
+    let config = Config::load_or_init();
+    let client = ApiClient::new(&config);
+    let prompt = config.default_prompt;
 
     // 1. 启动 IO 线程 (网络请求)
     thread::spawn(move || {
@@ -37,76 +81,57 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let mut exec_result: Option<String> = None;
-
-    println!("等待注入测试提示词...\n");
+    println!("正在注入提示词...\n");
 
     // TEST: 注入提示词
-    tx_to_io.send(AppMessage::UserQuery(
-        "我们正在进行一个测试，关于 Coding Agent 的命令工具调用功能，\
-         就像和用户聊天一样，不用紧张，当用户让你尝试执行命令时，输出 ```exec\n<Bash命令>\n``` 的内容，然后立刻停止输出"
-    .to_string()))?;
+    tx_to_io.send(AppMessage::UserQuery(prompt))?;
 
     // 消耗 Receiver
-    loop {
-        if let Ok(msg) = rx_from_io.recv() {
-            match msg {
-                AppMessage::TaskComplete => break,
-                _ => {}
-            }
-        }
-    }
+    skip_recv(&rx_from_io);
 
     // 2. 主线程：处理 RustyLine 输入和 UI 渲染
     let mut rl = DefaultEditor::new()?;
 
     loop {
-        // 读取输入
+        // 1. 获取用户输入
         let readline = rl.readline(&format!("{}", "🦀 > ".bright_red()));
-        match readline {
+        let line = match readline {
             Ok(line) => {
-                let query;
-                if let Some(result) = exec_result {
-                    query = format!("--- [ exec_result ] ---\n{}-----------------------\n{}", result, line);
-                } else { query = line.clone(); }
-
-                println!("\n[DEBUG]: 发送的消息: \n{}", &query);
-
                 rl.add_history_entry(line.as_str())?;
-                tx_to_io.send(AppMessage::UserQuery(query))?;
+                line
+            },
+            Err(_) => break, // 退出
+        };
 
-                let mut full_msg = String::new();
+        // 2. 进入“自动迭代”闭环
+        let mut next_input = Some(line);
 
-                // 进入 UI 监听循环，直到模型回复完成
-                loop {
-                    if let Ok(msg) = rx_from_io.recv() {
-                        match msg {
-                            AppMessage::ModelChunk(chunk) => {
-                                // 拼凑完整消息 用作命令解析
-                                full_msg.push_str(chunk.as_str());
+        while let Some(current_query) = next_input {
+            // 发送给 IO 线程（记得要在 IO 线程处理 ExecResult，见下文）
+            tx_to_io.send(AppMessage::UserQuery(current_query))?;
 
-                                // 将消息立刻输出到控制台
-                                print!("{}", chunk.white());
-                                std::io::Write::flush(&mut std::io::stdout())?;
-                            },
+            // 监听 AI 说话
+            let full_msg = listen(&rx_from_io)?;
 
-                            AppMessage::SystemLog(log) => {
-                                eprintln!("\n[ERROR]: {}", log)
-                            },
+            // 尝试解析工具调用
+            if let Some(call) = parse_tool_call(full_msg) {
+                match call.tool {
+                    Tool::Exec => {
+                        // 构造反馈给 AI 的上下文
+                        let result_for_ai = format!(
+                            "--- [ exec_result ] ---\n{}-----------------------",
+                            call.result
+                        );
+                        println!("\n{}", "[系统]: 已自动将执行结果反馈给 AI...".bright_black());
 
-                            AppMessage::TaskComplete => break, // 这一轮对话结束，回到提示符
-                            _ => {}
-                        }
+                        // 关键：设置下一次循环的内容，不再经过 readline
+                        next_input = Some(result_for_ai);
                     }
+                    _ => next_input = None,
                 }
-
-                exec_result = executor::parse_and_exec_cmd(full_msg);
-
-                println!();
-            }
-            Err(_) => {
-                println!("[Oxicodent exited]");
-                break;
+            } else {
+                // 没有工具调用了，彻底结束这一轮，回到顶层 loop 让用户输入
+                next_input = None;
             }
         }
     }
