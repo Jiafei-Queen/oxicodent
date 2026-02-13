@@ -38,7 +38,7 @@ impl Config {
 
             // 这里可以触发一个交互式提示，让用户输入 API Key
             let config = Config {
-                api_key: "your_key_here".into(),
+                api_key: "YOUR_API_KEY".into(),
                 api_base: "https://api.anthropic.com/v1".into(),
                 model: "claude-3-5-sonnet-20241022".into(),
             };

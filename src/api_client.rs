@@ -47,14 +47,18 @@ impl ApiClient {
     }
 
     pub fn send_chat_stream(&self, messages: Vec<ChatMessage>, tx: std::sync::mpsc::Sender<crate::AppMessage>) {
-        let url = self.api_base.to_string();
+        let url = format!("{}", self.api_base);
         let request_body = ChatRequest {
             model: self.model.clone(),
             messages,
             stream: true,
         };
 
-        let response = self.client.post(url).json(&request_body).send();
+        let response = self.client.post(url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&request_body)
+            .send();
 
         match response {
             Ok(res) => {
