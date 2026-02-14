@@ -73,19 +73,26 @@ impl ApiClient {
                         if data == "[DONE]" { break; }
 
                         // 解析 JSON 提取文本片段 (Chunk)
-                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
                             if let Some(content) = json["choices"][0]["delta"]["content"].as_str() {
                                 // 通过通道传回主线程
-                                tx.send(crate::AppMessage::ModelChunk(content.to_string())).unwrap();
+                                let _ = tx.send(crate::AppMessage::ModelChunk(content.to_string()));
                             }
                         }
                     }
                 }
             }
             Err(e) => {
-                tx.send(crate::AppMessage::SystemLog(format!("网络请求失败: {}", e))).unwrap();
+                let error_msg = format!("网络请求失败: {}", e);
+                // 简单过滤潜在的敏感信息
+                let safe_msg = if error_msg.contains("Bearer ") || error_msg.contains("api_key") {
+                    "网络请求失败: 认证错误或网络问题".to_string()
+                } else {
+                    error_msg
+                };
+                let _ = tx.send(crate::AppMessage::SystemLog(safe_msg));
             }
         }
-        tx.send(crate::AppMessage::TaskComplete).unwrap();
+        let _ = tx.send(crate::AppMessage::TaskComplete);
     }
 }
