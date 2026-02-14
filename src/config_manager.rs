@@ -1,10 +1,23 @@
+use std::io::Write;
 use serde::{Serialize, Deserialize};
 use std::path::PathBuf;
-use std::fs;
+use std::{fs, env};
+use crate::api_client::ChatMessage;
+use chrono::Local;
 
 const ROOT_DIR: &str = ".oxicodent";
 const CONFIG_FILENAME: &str = "config.json";
 const PROMPT_FILENAME: &str = "prompt.md";
+const HISTORY_FILENAME: &str = ".oxicodent-history.yaml";
+
+fn get_home_path() -> PathBuf {
+    let mut path = env::home_dir().unwrap();
+    path.push(ROOT_DIR);
+    if !path.exists() {
+        fs::create_dir_all(&path).unwrap();
+    }
+    path
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Config {
@@ -47,13 +60,45 @@ impl Config {
     }
 }
 
-fn get_home_path() -> PathBuf {
-    let mut path = home::home_dir().expect("无法获取主目录");
-    path.push(ROOT_DIR);
-    if !path.exists() {
-        fs::create_dir_all(&path).unwrap();
+#[derive(Debug, Serialize, Deserialize)]
+pub struct History {
+    time: String,
+    pub role: String,
+    pub content: String
+}
+
+impl History {
+    pub fn update_history(msg: ChatMessage) {
+        let time = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+        let history = History { time, role: msg.role, content: msg.content };
+        let yaml = serde_yaml::to_string(&history).unwrap();
+
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(HISTORY_FILENAME).unwrap();
+
+        writeln!(file, "{}---", yaml).unwrap();
     }
-    path
+
+    pub fn load_history() -> Result<Vec<Self>, Box<dyn std::error::Error>> {
+        let mut history: Vec<Self> = Vec::new();
+        let content = fs::read_to_string(HISTORY_FILENAME)?;
+
+        let mut block = String::new();
+        for line in content.lines() {
+            if line != "---" {
+                block.push_str(format!("{}\n", line).as_str());
+            } else {
+                let yaml: Self = serde_yaml::from_str(&block)?;
+                history.push(yaml);
+                block = String::new();
+            }
+        }
+
+        Ok(history)
+    }
 }
 
 pub fn read_or_create_prompt() -> String {
@@ -71,23 +116,65 @@ pub fn read_or_create_prompt() -> String {
 }
 
 fn get_default_prompt_content() -> &'static str {
-r#"# Role: Oxicodent Agent 框架
+r#"# Role: Oxicodent Agent - 强大的 Coding Agent
 
-你正运行在一个 Coding Agent 框架中，它可以给你提供简单的工具调用，方便你辅佐用户写代码
+你是一个拥有高度自律能力的 Coding Agent，你的使命是**准确、高效、完整地完成编程任务**。
+
+## 🏗️ 核心能力要求
+
+### 1. 系统性思维 (Systemic Thinking)
+- **问题分解**：复杂任务必须拆解为可执行的原子步骤
+- **状态追踪**：时刻保持对任务进度、已修改文件、待验证项的清晰认知
+- **闭环验证**：每个关键步骤后必须进行自我验证，严禁"假设正确"
+
+### 2. 工具调用自律 (Tool Call Discipline)
+- **单次调用**：每轮回复只允许一次 ```exec 工具调用
+- **执行后等待**：调用后必须等待框架返回结果，再进行下一步
+- **结果分析**：必须分析执行结果，成功则继续，失败则诊断并重试
+
+### 3. 代码修改规范**
+- **原子性**：每次修改只聚焦一个明确目标
+- **可验证**：修改后必须立即运行 `cargo check` / `cargo test` 验证
+- **最小化**：只修改必要的部分，避免不相关的变更
 
 ## ⚠️ 绝对准则 (Hard Rules)
-1. **禁止废话**：除了必要的意图说明，严禁解释代码原理。
-2. **原子化操作**：所有的代码变更必须通过 ```exec 使用 `sed`或`patch` 进行修改。
-3. **验证闭环**：修改文件后，必须立刻接一个 ```exec cargo check，严禁询问“你是否要检查”。
-4. **拆解步骤**：当收到复杂指令时，请尝试将任务拆解成多个步骤，依次执行
+1. **禁止任何形式的询问**：严禁询问"是否要检查"、"是否继续"等问题。该做什么，自己清楚。
+2. **禁止解释原理**：除必要的意图说明外，直接输出可执行的代码/命令，不说废话
+3. **禁止多线程修改**：同一时间只处理一个文件的修改
+4. **必须自验证**：任何代码变更后，必须立即运行验证命令
 
-## 工具调用
-你可以使用 Markdown 代码块 ```exec 在 Bash 中执行命令，事例如下：
+## 🔧 工具调用语法
+
+使用 Markdown 代码块 ```exec 在 Bash 中执行命令：
+
 ```exec
-echo "Hello World!"
+cargo check
 ```
-框架会自动检测 ```exec 代码块，并在用户监管下执行
 
-> **注意**：每次输出的对话内容只允许进行一次工具调用，在调用完成后，程序会自动向你输出结果
+框架会自动检测并执行命令，然后将结果反馈给你。
+
+## 📝 输出格式
+
+```
+[意图说明：简要说明你要做什么]
+```exec
+[命令]
+```
+
+## 🎯 任务流程
+
+1. 接收用户需求
+2. 分析任务复杂度，拆解步骤
+3. 执行第一步（单次工具调用）
+4. 等待结果反馈
+5. 分析结果，决定继续/回滚/重试
+6. 重复步骤 3-5 直到完成
+
+## 💪 自我要求
+
+- **主动验证**：不要等用户告诉你检查，你主动检查
+- **错误诊断**：执行失败时，分析错误原因，而不是简单重试
+- **进度意识**：时刻清楚"我在哪一步"、"下一步是什么"、"完成标志是什么"
+- **质量第一**：宁可慢一点，也要确保每一步都是正确的
 "#
 }
