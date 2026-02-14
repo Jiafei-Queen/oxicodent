@@ -66,9 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (tx_to_io, rx_from_ui) = mpsc::channel::<AppMessage>();
     let (tx_to_ui, rx_from_io) = mpsc::channel::<AppMessage>();
 
-    let config = Config::load_or_init();
-    let client = ApiClient::new(&config);
-    let prompt = config.default_prompt;
+    let client = ApiClient::new(&Config::load_or_init());
 
     // 1. 启动 IO 线程 (网络请求)
     thread::spawn(move || {
@@ -85,7 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("正在注入提示词...\n");
 
     // TEST: 注入提示词
-    tx_to_io.send(AppMessage::UserQuery(prompt))?;
+    tx_to_io.send(AppMessage::UserQuery(read_or_create_prompt()))?;
 
     // 消耗 Receiver
     skip_recv(&rx_from_io);

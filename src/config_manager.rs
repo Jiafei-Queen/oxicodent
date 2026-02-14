@@ -4,30 +4,21 @@ use std::fs;
 
 const ROOT_DIR: &str = ".oxicodent";
 const CONFIG_FILENAME: &str = "config.json";
+const PROMPT_FILENAME: &str = "prompt.md";
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Config {
     pub api_key: String,
     pub api_base: String, // 方便支持 Ollama 或自定义代理
     pub model: String,
-    pub default_prompt: String
 }
 
 impl Config {
-    /// 获取配置文件路径
-    fn get_home_path() -> PathBuf {
-        let mut path = home::home_dir().expect("无法获取主目录");
-        path.push(ROOT_DIR);
-        if !path.exists() {
-            fs::create_dir_all(&path).unwrap();
-        }
-        path.push(CONFIG_FILENAME);
-        path
-    }
-
     /// 加载配置，如果不存在则引导用户创建
     pub fn load_or_init() -> Self {
-        let path = Self::get_home_path();
+        let mut path = get_home_path();
+        path.push(CONFIG_FILENAME);
+
         if path.exists() {
             // TODO: fs 读取文件错误处理
             let content = fs::read_to_string(path).unwrap();
@@ -42,7 +33,6 @@ impl Config {
                 api_key: "YOUR_API_KEY".into(),
                 api_base: "https://api.anthropic.com/v1".into(),
                 model: "claude-3-5-sonnet-20241022".into(),
-                default_prompt: get_default_prompt_content().into()
             };
 
             let json = serde_json::to_string_pretty(&config).unwrap();
@@ -55,6 +45,29 @@ impl Config {
             std::process::exit(0);
         }
     }
+}
+
+fn get_home_path() -> PathBuf {
+    let mut path = home::home_dir().expect("无法获取主目录");
+    path.push(ROOT_DIR);
+    if !path.exists() {
+        fs::create_dir_all(&path).unwrap();
+    }
+    path
+}
+
+pub fn read_or_create_prompt() -> String {
+    let mut path = get_home_path();
+    path.push(PROMPT_FILENAME);
+
+    if path.exists() {
+        fs::read_to_string(&path).unwrap()
+    } else {
+        fs::write(&path, get_default_prompt_content()).unwrap();
+        println!("已在 ~/{}/{} 写入默认提示词，可随时更改", ROOT_DIR, PROMPT_FILENAME);
+        get_default_prompt_content().to_string()
+    }
+
 }
 
 fn get_default_prompt_content() -> &'static str {
