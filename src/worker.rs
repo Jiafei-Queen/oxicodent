@@ -14,14 +14,13 @@ pub struct Call {
 }
 
 pub fn parse_tool_call(msg: String) -> Option<Call> {
-    let mut tool_call: Option<Tool> = None;
+    let mut tool: Option<Tool> = None;
     let mut content = String::new();
     let mut in_block = false;
 
     for line in msg.lines() {
-        let line = line.trim();
         if line.starts_with("```exec") {
-            tool_call = Some(Tool::Exec);
+            tool = Some(Tool::Exec);
             in_block = true;
             continue;
         } else if line.starts_with("```diff") {
@@ -36,11 +35,11 @@ pub fn parse_tool_call(msg: String) -> Option<Call> {
                 filename = filename[1..filename.len()-1].to_string();
             }
 
-            tool_call = Some(Tool::Diff(filename));
+            tool = Some(Tool::Diff(filename));
             in_block = true;
             continue
         } else if line == "```" && in_block {
-            break;
+            return Some(Call { tool: tool.unwrap(), content })
         }
 
         if in_block {
@@ -48,13 +47,7 @@ pub fn parse_tool_call(msg: String) -> Option<Call> {
         }
     }
 
-    match tool_call {
-        None => { None },
-        Some(tool) => {
-            Some(Call { tool, content })
-        }
-    }
-
+    None
 }
 
 /// 安全地执行命令，避免 shell 注入
@@ -118,6 +111,13 @@ pub fn apply_patch(file_path: &str, diff: &str) -> Result<(), String> {
     // 3. 应用 Patch
     let applied = apply(&original, &patch)
         .map_err(|e| format!("无法应用Patch: {}", e))?;
+
+    if applied == original {
+        return Err(format!(
+            "Patch 应用失败：文件 <{}> 内容未发生任何变化。请检查你的 Diff 上下文是否与当前文件内容匹配。",
+            file_path
+        ));
+    }
 
     // 4. 写入文件
     fs::write(&safe_path, applied)
