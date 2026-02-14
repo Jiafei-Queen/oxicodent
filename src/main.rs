@@ -2,76 +2,79 @@ mod config_manager;
 mod api_client;
 mod worker;
 
-use std::sync::mpsc;
-use std::sync::mpsc::Receiver;
-use std::thread;
-use rustyline::DefaultEditor;
-use colored::*;
-use crate::api_client::ChatMessage;
-use api_client::ApiClient;
+use ratatui::{
+    backend::CrosstermBackend,
+    layout::{Constraint, Direction, Layout},
+    widgets::{Block, Borders, Paragraph, Wrap},
+    Terminal, style::{Style, Color},
+};
+
+use crossterm::{
+    event::{self, Event, KeyCode},
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    ExecutableCommand,
+};
+
+use std::{io, sync::mpsc, thread, time::Duration};
+use ratatui::layout::Alignment;
+use crate::api_client::{ChatMessage, ApiClient};
 use crate::config_manager::*;
 use crate::worker::*;
 
-// 定义线程间传输的消息类型
 enum AppMessage {
-    UserQuery(String),      // 用户输入
-    ModelChunk(String),     // 模型返回的文本片段
-    SystemLog(String),      // 系统通知
-    TaskComplete            // 任务结束
+    UserQuery(String),
+    ModelChunk(String),
+    SystemLog(String),
+    TaskComplete,
 }
 
-fn skip_recv(receiver: &Receiver<AppMessage>) {
-    loop {
-        if let Ok(msg) = receiver.recv() {
-            match msg {
-                AppMessage::TaskComplete => break,
-                _ => {}
-            }
-        }
-    }
+struct App {
+    input: String,
+    history_display: String, // 将历史拼成一个大字符串，方便 Paragraph 渲染
+    current_ai_response: String,
+    pending_action: PendingAction,
 }
 
-fn listen(receiver: &Receiver<AppMessage>) -> Result<String, Box<dyn std::error::Error>> {
-    let mut full_msg = String::new();
+enum PendingAction {
+    None,
+    ConfirmExec(String), // 存储待执行的命令
+}
 
-    loop {
-        if let Ok(msg) = receiver.recv() {
-            match msg {
-                AppMessage::ModelChunk(chunk) => {
-                    // 拼凑完整消息 用作命令解析
-                    full_msg.push_str(chunk.as_str());
+// 这是一个辅助函数，用于在屏幕中央计算出一个矩形区域
+fn centered_rect(percent_x: u16, percent_y: u16, r: ratatui::layout::Rect) -> ratatui::layout::Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ].as_ref())
+        .split(r);
 
-                    // 将消息立刻输出到控制台
-                    print!("{}", chunk.white());
-                    std::io::Write::flush(&mut std::io::stdout())?;
-                },
-
-                AppMessage::SystemLog(log) => {
-                    eprintln!("\n[ERROR]: {}", log)
-                },
-
-                AppMessage::TaskComplete => break,
-                _ => {}
-            }
-        }
-    }
-
-    Ok(full_msg)
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ].as_ref())
+        .split(popup_layout[1])[1]
 }
 
 #[cfg(unix)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    print_logo();
+    // --- 终端初始化 ---
+    enable_raw_mode()?;
+    io::stdout().execute(EnterAlternateScreen)?;
+    let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
 
-    let (tx_to_io, rx_from_ui) = mpsc::channel::<AppMessage>();
-    let (tx_to_ui, rx_from_io) = mpsc::channel::<AppMessage>();
-
+    // --- 通信与后台线程 ---
+    let (tx_to_io, rx_from_ui) = mpsc::channel();
+    let (tx_to_ui, rx_from_io) = mpsc::channel();
     let client = ApiClient::new(&Config::load_or_init());
 
-    // 1. 启动 IO 线程 (网络请求)
     thread::spawn(move || {
-        let mut history: Vec<ChatMessage> = Vec::new(); // 简单的会话历史管理
-
+        let mut history: Vec<ChatMessage> = Vec::new();
         while let Ok(msg) = rx_from_ui.recv() {
             if let AppMessage::UserQuery(query) = msg {
                 history.push(ChatMessage { role: "user".into(), content: query });
@@ -80,87 +83,148 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    println!("正在注入提示词...\n");
+    let mut app = App {
+        input: String::new(),
+        history_display: String::new(),
+        current_ai_response: String::new(),
+        pending_action: PendingAction::None
+    };
 
-    // TEST: 注入提示词
+    // 注入提示词
     tx_to_io.send(AppMessage::UserQuery(read_or_create_prompt()))?;
 
-    // 消耗 Receiver
-    skip_recv(&rx_from_io);
-
-    // 2. 主线程：处理 RustyLine 输入和 UI 渲染
-    let mut rl = DefaultEditor::new()?;
-
+    // --- UI 渲染循环 ---
     loop {
-        let readline = rl.readline(&format!("{}", "🦀 > ".bright_red()));
-        let line = match readline {
-            Ok(line) => {
-                rl.add_history_entry(line.as_str())?;
-                line
-            },
-            Err(_) => break,
-        };
+        // main.rs 渲染部分重构
+        terminal.draw(|f| {
+            // 重新划分：Logo(固定高度) | 对话区(自动拉伸) | 输入框(固定高度)
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(8), // Logo 预留 8 行高度
+                    Constraint::Min(10),   // 对话区至少保留 10 行
+                    Constraint::Length(3), // 输入框 3 行
+                ])
+                .split(f.size());
 
-        // 状态变量：控制自主循环
-        let mut next_input_to_ai = Some(line);
+            // --- 1. 渲染 Logo (独立区域，不会再干扰对话) ---
+            let logo_text = get_logo_text();
+            let logo = Paragraph::new(logo_text)
+                .style(Style::default().fg(Color::Red))
+                .alignment(Alignment::Center); // 居中
+            f.render_widget(logo, chunks[0]);
 
-        while let Some(current_query) = &next_input_to_ai {
-            // 1. 发送消息（用户输入或上一次的执行结果）
-            tx_to_io.send(AppMessage::UserQuery(current_query.to_string()))?;
+            // --- 2. 渲染对话区 (使用 Paragraph 替代 List 以修复 wrap 报错) ---
+            let mut display_text = app.history_display.clone();
+            if !app.current_ai_response.is_empty() {
+                display_text.push_str(&format!("\nAGENT: {}", app.current_ai_response));
+            }
 
-            // 2. 等待并打印 AI 回复
-            println!("\n{} ", "Agent:".bright_cyan());
-            let full_msg = listen(&rx_from_io)?;
-            println!();
+            let chat_block = Paragraph::new(display_text)
+                .block(Block::default().borders(Borders::ALL).title(" Oxicodent Chat "))
+                .wrap(Wrap { trim: true });
+            f.render_widget(chat_block, chunks[1]);
 
-            let tool_call = parse_tool_call(full_msg);
+            // --- 3. 渲染输入框 ---
+            let input_block = Paragraph::new(app.input.as_str())
+                .block(Block::default().borders(Borders::ALL).title(" 输入 (回车发送, ESC退出) "));
+            f.render_widget(input_block, chunks[2]);
 
-            // 3. 尝试解析工具调用
-            if let Some(call) = tool_call {
-                match call.tool {
-                    Tool::Exec => {
-                        if confirm(&mut rl) {
-                            let result_feedback = format!(
-                                "--- [ exec_result ] ---\n{}-----------------------",
-                                exec_cmd(call.content)
-                            );
+            // 渲染弹窗
+            if let PendingAction::ConfirmExec(cmd) = &app.pending_action {
+                let area = centered_rect(60, 20, f.size());
+                f.render_widget(ratatui::widgets::Clear, area);
+                let block = Block::default().title(" 确认执行命令？ ").borders(Borders::ALL).border_style(Style::default().fg(Color::Red));
+                let text = Paragraph::new(format!("命令: {}\n\n按 [Y] 确认 / [N] 取消", cmd))
+                    .block(block)
+                    .alignment(Alignment::Center);
+                f.render_widget(text, area);
+            }
+        })?;
 
-                            println!("{}", "[系统]: 命令已执行，正在自动反馈给 AI...".bright_black());
-                            next_input_to_ai = Some(result_feedback); // 触发下一轮 while 循环
-                        } else {
-                            next_input_to_ai = None;
-                            println!();
+        // --- 异步消息处理 ---
+        if let Ok(msg) = rx_from_io.try_recv() {
+            match msg {
+                AppMessage::ModelChunk(chunk) => app.current_ai_response.push_str(&chunk),
+                AppMessage::TaskComplete => {
+                    let full_msg = std::mem::take(&mut app.current_ai_response);
+                    app.history_display.push_str(&format!("\nAGENT: {}\n", full_msg));
+
+                    // 这里触发解析工具调用
+                    if let Some(call) = parse_tool_call(full_msg) {
+                        match call.tool {
+                            Tool::Exec => {
+                                app.pending_action = PendingAction::ConfirmExec(call.content);
+                            }
+                            _ => { }
                         }
                     }
-                    _ => { next_input_to_ai = None; println!(); }
                 }
-            } else { next_input_to_ai = None; println!() }
+                AppMessage::SystemLog(log) => app.history_display.push_str(&format!("\n[ERROR]: {}\n", log)),
+                _ => {}
+            }
+        }
+
+        // --- 事件监听 ---
+        if event::poll(Duration::from_millis(10))? {
+            if let Event::Key(key) = event::read()? {
+                match key.code {
+                    KeyCode::Esc => break,
+                    KeyCode::Enter => {
+                        if let PendingAction::None = &app.pending_action {
+                            let query = std::mem::take(&mut app.input);
+                            app.history_display.push_str(&format!("\nUSER: {}\n", query));
+                            tx_to_io.send(AppMessage::UserQuery(query))?;
+                        }
+                    }
+                    KeyCode::Char(c) => {
+                        if (c == 'c' || c == 'd') && key.modifiers.contains(event::KeyModifiers::CONTROL) {
+                            break;
+                        }
+
+                        if let PendingAction::ConfirmExec(exec) = &app.pending_action {
+                            if c == 'y' || c == 'Y' {
+                                let result_feedback = format!(
+                                    "--- [ exec_result ] ---\n{}-----------------------",
+                                    exec_cmd(exec)
+                                );
+                                tx_to_io.send(AppMessage::UserQuery(result_feedback))?;
+                                app.pending_action = PendingAction::None;
+                            } else if c == 'n' || c == 'N' {
+                                app.pending_action = PendingAction::None;
+                            }
+                        } else {
+                            app.input.push(c)
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        if let PendingAction::None = &app.pending_action {
+                            app.input.pop();
+                        }
+                    }
+
+
+
+                    _ => {}
+                }
+            }
         }
     }
 
+    // --- 恢复终端 ---
+    disable_raw_mode()?;
+    io::stdout().execute(LeaveAlternateScreen)?;
     Ok(())
 }
 
-pub fn confirm(rl: &mut DefaultEditor) -> bool {
-    loop {
-        let readline = rl.readline(&format!("{}", "\n🦀请审查是否进行此操作 [y/n]> ".bright_red()));
-        if let Ok(line) = readline {
-            if line.trim() == "y" {
-                return true
-            } else if line.trim() == "n" {
-                return false
-            }
-        } else { std::process::exit(0) }
-    }
-}
-
-fn print_logo() {
-    println!("\n  .oooooo.                o8o                            .o8                            .   ");
-    println!(" d8P'  `Y8b               `\"'                           \"888                          .o8   ");
-    println!("888      888 oooo    ooo oooo   .ooooo.   .ooooo.   .oooo888   .ooooo.  ooo. .oo.   .o888oo ");
-    println!("888      888  `88b..8P'  `888  d88' `\"Y8 d88' `88b d88' `888  d88' `88b `888P\"Y88b    888   ");
-    println!("888      888    Y888'     888  888       888   888 888   888  888ooo888  888   888    888   ");
-    println!("`88b    d88'  .o8\"'88b    888  888   .o8 888   888 888   888  888    .o  888   888    888 . ");
-    println!(" `Y8bood8P'  o88'   888o o888o `Y8bod8P' `Y8bod8P' `Y8bod88P\" `Y8bod8P' o888o o888o   \"888\" ");
-    println!("\t:: Oxicodent — A Light Coding Agent ::\t(v{})\n", env!("CARGO_PKG_VERSION"))
+fn get_logo_text() -> String {
+    let logo =
+r#"  .oooooo.                o8o                            .o8                            .
+ d8P'  `Y8b               `"'                           "888                          .o8
+   888      888 oooo    ooo oooo   .ooooo.   .ooooo.   .oooo888   .ooooo.  ooo. .oo.   .o888oo
+888      888  `88b..8P'  `888  d88' `"Y8 d88' `88b d88' `888  d88' `88b `888P"Y88b    888
+888      888    Y888'     888  888       888   888 888   888  888ooo888  888   888    888
+  `88b    d88'  .o8"'88b    888  888   .o8 888   888 888   888  888    .o  888   888    888 .
+         `Y8bood8P'  o88'   888o o888o `Y8bod8P' `Y8bod8P' `Y8bod88P" `Y8bod8P' o888o o888o   "888"     "#;
+    format!("{}\n:: Oxicodent — A Light Coding Agent ::\t(v{})", logo, env!("CARGO_PKG_VERSION"))
 }

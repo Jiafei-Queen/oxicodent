@@ -33,16 +33,16 @@ pub fn parse_tool_call(msg: String) -> Option<Call> {
     match tool_call {
         None => { None },
         Some(tool) => {
-            Some(Call { tool, content})
+            Some(Call { tool, content })
         }
     }
 
 }
 
-pub fn exec_cmd(cmd: String) -> String {
+pub fn exec_cmd(cmd: &str) -> String {
     let output = Command::new("sh")
         .arg("-c")
-        .arg(cmd.as_str())
+        .arg(cmd)
         .output()
         .expect("failed to execute process");
 
