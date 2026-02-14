@@ -15,7 +15,7 @@ use crossterm::{
     ExecutableCommand,
 };
 
-use std::{io, sync::mpsc, thread, time::Duration};
+use std::{io, sync::mpsc, thread, time::Duration, env, fs};
 use ratatui::layout::Alignment;
 use crate::api_client::{ChatMessage, ApiClient};
 use crate::config_manager::*;
@@ -104,8 +104,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         pending_action: PendingAction::None
     };
 
+    // 获得当前目录下的条目
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(".")? {
+        let path = entry?.path();
+        entries.push(path.file_name().unwrap().to_string_lossy().to_string());
+    }
+
+    // 拼接提示词
+    let prompt = format!("{}\n\nCWD: {}\n--- [ DIRS ] ---\n{}----------------",
+        read_or_create_prompt(),
+        env::current_dir()?.to_string_lossy().to_string(),
+        entries.join("\n")
+    );
+
     // 注入提示词
-    tx_to_io.send(AppMessage::UserQuery(read_or_create_prompt()))?;
+    tx_to_io.send(AppMessage::UserQuery(prompt))?;
 
     let (ui_to_worker, worker_from_ui) = mpsc::channel();
     let (worker_to_ui, ui_from_worker) = mpsc::channel();
