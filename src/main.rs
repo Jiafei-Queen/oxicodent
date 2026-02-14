@@ -24,6 +24,9 @@ use crate::worker::*;
 enum AppMessage {
     UserQuery(String),
     ModelChunk(String),
+    AssistantReply(String),
+    ExecCommand(String),
+    ExecResult(String),
     SystemLog(String),
     TaskComplete,
 }
@@ -76,9 +79,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     thread::spawn(move || {
         let mut history: Vec<ChatMessage> = Vec::new();
         while let Ok(msg) = rx_from_ui.recv() {
-            if let AppMessage::UserQuery(query) = msg {
-                history.push(ChatMessage { role: "user".into(), content: query });
-                client.send_chat_stream(history.clone(), tx_to_ui.clone());
+            match msg {
+                AppMessage::UserQuery(q) => {
+                    history.push(ChatMessage { role: "user".into(), content: q });
+                    client.send_chat_stream(history.clone(), tx_to_ui.clone());
+                }
+                AppMessage::AssistantReply(content) => {
+                    history.push(ChatMessage { role: "assistant".into(), content });
+                }
+                AppMessage::ExecResult(result) => {
+                    let feedback = format!("Command output:\n{}", result);
+                    history.push(ChatMessage { role: "user".into(), content: feedback });
+                    // 这里可以选择是否立即触发 AI 下一步，或者等待用户
+                }
+                _ => {}
             }
         }
     });
@@ -92,6 +106,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 注入提示词
     tx_to_io.send(AppMessage::UserQuery(read_or_create_prompt()))?;
+
+    let (ui_to_worker, worker_from_ui) = mpsc::channel();
+    let (worker_to_ui, ui_from_worker) = mpsc::channel();
+
+    // 创建 Worker 线程
+    thread::spawn(move || {
+        while let Ok(msg) = worker_from_ui.recv() {
+            if let AppMessage::ExecCommand(cmd) = msg {
+                let result = exec_cmd(&*cmd);
+                worker_to_ui.send(AppMessage::ExecResult(result)).unwrap();
+            }
+        }
+    });
 
     // --- UI 渲染循环 ---
     loop {
@@ -148,7 +175,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 AppMessage::ModelChunk(chunk) => app.current_ai_response.push_str(&chunk),
                 AppMessage::TaskComplete => {
                     let full_msg = std::mem::take(&mut app.current_ai_response);
+                    // 刷新屏幕显示
                     app.history_display.push_str(&format!("\nAGENT: {}\n", full_msg));
+                    // 更新 AGENT 输出上下文
+                    tx_to_io.send(AppMessage::AssistantReply(full_msg.clone()))?;
 
                     // 这里触发解析工具调用
                     if let Some(call) = parse_tool_call(full_msg) {
@@ -159,6 +189,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             _ => { }
                         }
                     }
+                }
+                AppMessage::SystemLog(log) => app.history_display.push_str(&format!("\n[ERROR]: {}\n", log)),
+                _ => {}
+            }
+        }
+
+        if let Ok(msg) = ui_from_worker.try_recv() {
+            match msg {
+                AppMessage::ExecResult(result) => {
+                    let result_feedback = format!(
+                        "--- [ exec_result ] ---\n{}-----------------------", result
+                    );
+                    tx_to_io.send(AppMessage::UserQuery(result_feedback))?;
                 }
                 AppMessage::SystemLog(log) => app.history_display.push_str(&format!("\n[ERROR]: {}\n", log)),
                 _ => {}
@@ -179,16 +222,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     KeyCode::Char(c) => {
                         if (c == 'c' || c == 'd') && key.modifiers.contains(event::KeyModifiers::CONTROL) {
-                            break;
+                            return Ok(())
                         }
 
                         if let PendingAction::ConfirmExec(exec) = &app.pending_action {
                             if c == 'y' || c == 'Y' {
-                                let result_feedback = format!(
-                                    "--- [ exec_result ] ---\n{}-----------------------",
-                                    exec_cmd(exec)
-                                );
-                                tx_to_io.send(AppMessage::UserQuery(result_feedback))?;
+                                ui_to_worker.send(AppMessage::ExecCommand(exec.to_string()))?;
                                 app.pending_action = PendingAction::None;
                             } else if c == 'n' || c == 'N' {
                                 app.pending_action = PendingAction::None;
@@ -202,9 +241,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             app.input.pop();
                         }
                     }
-
-
-
                     _ => {}
                 }
             }
