@@ -179,7 +179,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // 拼接提示词
-    let prompt = format!("{}\n\nCWD: {}\n--- [ DIRS ] ---\n{}----------------",
+    let prompt = format!(
+        "--- [ SYSTEM PROMPT ] ---\n{}\n\nCWD: {}\n--- [ DIRS ] ---\n{}----------------\nTHESE AIM TO HELP YOU KNOW ABOUT THE PROJECT",
         read_or_create_prompt(),
         env::current_dir()?.to_string_lossy().to_string(),
         entries.join("\n")
