@@ -15,24 +15,41 @@ use crossterm::{
     ExecutableCommand,
 };
 
-use std::{io, sync::mpsc, thread, time::Duration, env, fs};
+use std::sync::{mpsc, RwLock, Arc, OnceLock};
+use std::{io, sync, thread, time::Duration, env, fs};
 use ratatui::layout::Alignment;
 use ratatui::text::{Line, Span};
-use crate::api_client::{ChatMessage, ApiClient};
+use crate::api_client::{ChatMessage, ApiClient, Model};
 use crate::config_manager::*;
+use crate::SystemMessage::ReadResult;
 use crate::worker::*;
 
 enum AppMessage {
-    Prompt(String, Option<Vec<ChatMessage>>),
     UserQuery(String),
+    AIMsg(AssistantMessage),
+    SysMsg(SystemMessage)
+}
+
+enum AssistantMessage {
     ModelChunk(String),
     AssistantReply(String),
+    TaskComplete,
+}
+
+enum SystemMessage {
+    // 提示词：reasoning, coder, history
+    Prompt(String, String, Option<Vec<ChatMessage>>),
+    // 命令执行
     ExecCommand(String),
     ExecResult(String),
+    // 读取文件
+    Read(String),
+    ReadResult(String),
+    // 应用补丁
     Diff(String, String),
     DiffResult(String),
+    // 系统日志
     SystemLog(String),
-    TaskComplete,
 }
 
 struct App {
@@ -43,8 +60,6 @@ struct App {
     scroll_offset: u16,
     is_auto_scroll: bool,
 }
-
-const IS_AUTO_LOAD_HISTORY: bool = false;
 
 impl App {
     fn auto_scroll(&mut self, terminal_height: u16) {
@@ -72,45 +87,78 @@ enum PendingAction {
     ConfirmDiff(String, String)
 }
 
+// 定义一个全局静态变量
+static CURRENT_MODEL: OnceLock<Arc<RwLock<Model>>> = OnceLock::new();
+
+// 辅助函数：获取这个全局模型
+fn get_model() -> &'static Arc<RwLock<Model>> {
+    CURRENT_MODEL.get_or_init(|| {
+        Arc::new(RwLock::new(Model::Reasoning))
+    })
+}
+
 // 这是一个辅助函数，用于在屏幕中央计算出一个矩形区域
 fn centered_rect(percent_x: u16, percent_y: u16, r: ratatui::layout::Rect) -> ratatui::layout::Rect {
-    let popup_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ].as_ref())
-        .split(r);
+    let split = |dir, percent, rect| {
+        Layout::default()
+            .direction(dir)
+            .constraints([
+                Constraint::Percentage((100 - percent) / 2),
+                Constraint::Percentage(percent),
+                Constraint::Percentage((100 - percent) / 2),
+            ])
+            .split(rect)
+    };
 
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ].as_ref())
-        .split(popup_layout[1])[1]
+    let popup_layout = split(Direction::Vertical, percent_y, r);
+    split(Direction::Horizontal, percent_x, popup_layout[1])[1]
 }
 
 #[cfg(unix)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut debug = false;
+    let args: Vec<String> = env::args().skip(1).collect();
+    if args.len() == 1 && args[0].as_str() == "--debug" {
+        debug = true;
+    }
+
     // --- 终端初始化 ---
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
 
     // --- 通信与后台线程 ---
-    let (tx_to_io, rx_from_ui) = mpsc::channel();
-    let (tx_to_ui, rx_from_io) = mpsc::channel();
+    let (tx_to_io, rx_from_ui) = sync::mpsc::channel();
+    let (tx_to_ui, rx_from_io) = sync::mpsc::channel();
     let client = ApiClient::new(&Config::load_or_init());
+
+    // --- 创建应用变量 ---
+    let mut app = App {
+        input: String::new(),
+        history_display: String::new(),
+        current_ai_response: String::new(),
+        pending_action: PendingAction::None,
+        scroll_offset: 0,
+        is_auto_scroll: true,
+    };
+
+    let mut current_model = Arc::new(RwLock::new(Model::Reasoning));
 
     /*
      * -------- [ 创建 IO 线程 ] --------
      */
     thread::spawn(move || {
-        let mut history: Vec<ChatMessage> = Vec::new();
+        let mut reasoning_history: Vec<ChatMessage> = Vec::new();
+
         while let Ok(msg) = rx_from_ui.recv() {
+
+            let mut handle_system_result = | result: String | {
+                let chat_msg = ChatMessage { role: "system".into(), content: result };
+                history.push(chat_msg.clone());
+                History::update_history(chat_msg.clone());
+                client.send_chat_stream(history.clone(), tx_to_ui.clone());
+            };
+
             match msg {
                 AppMessage::Prompt(content, old_his) => {
                     history.push(ChatMessage { role: "system".into(), content });
@@ -126,37 +174,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     History::update_history(chat_msg.clone());
                     client.send_chat_stream(history.clone(), tx_to_ui.clone());
                 }
-                AppMessage::AssistantReply(content) => {
+                AppMessage::AIMsg(AssistantMessage::AssistantReply(content)) => {
                     let chat_msg = ChatMessage { role: "assistant".into(), content };
                     history.push(chat_msg.clone());
-                    History::update_history(chat_msg);
-                }
-                AppMessage::ExecResult(result) => {
-                    let chat_msg = ChatMessage { role: "system".into(), content: result };
-                    history.push(chat_msg.clone());
                     History::update_history(chat_msg.clone());
-                    client.send_chat_stream(history.clone(), tx_to_ui.clone());
                 }
-                AppMessage::DiffResult(result) => {
-                    let chat_msg = ChatMessage { role: "system".into(), content: result };
-                    history.push(chat_msg.clone());
-                    History::update_history(chat_msg.clone());
-                    client.send_chat_stream(history.clone(), tx_to_ui.clone());
+                AppMessage::SysMsg(SystemMessage::ExecResult(result)) => {
+                    handle_system_result(result);
+                }
+                AppMessage::SysMsg(ReadResult(result)) => {
+                    handle_system_result(result);
+                }
+                AppMessage::SysMsg(SystemMessage::DiffResult(result)) => {
+                    handle_system_result(result);
                 }
                 _ => {}
             }
         }
     });
-
-    // --- 创建应用变量 ---
-    let mut app = App {
-        input: String::new(),
-        history_display: String::new(),
-        current_ai_response: String::new(),
-        pending_action: PendingAction::None,
-        scroll_offset: 0,
-        is_auto_scroll: true
-    };
 
     // --- 获得当前目录下的条目 ---
     let mut entries = Vec::new();
@@ -168,50 +203,63 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // --- 加载聊天记录 ---
     let mut has_history = false;
-    let mut history: Vec<ChatMessage> = Vec::new();
+    let mut reasoning_history: Vec<ChatMessage> = Vec::new();
+    let mut coder_history: Vec<ChatMessage> = Vec::new();
     if let Ok(old) = History::load_history() {
-        has_history = true;
-        let _ = old.iter().map(
-            |h| history.push(
-                ChatMessage { role: h.role.clone(), content: h.content.clone() }
-            )
+        let old_reasoning_history = old.reasoning.clone();
+        let old_coder_history = old.coder.clone();
+
+        if old_reasoning_history.len() != 0 || old_coder_history.len() != 0 { has_history = true }
+
+        let _ = old_reasoning_history.iter().for_each(|yaml|
+            reasoning_history.push(ChatMessage { role: yaml.role, content: yaml.content })
+        );
+
+        let _ = old_coder_history.iter().for_each(|yaml|
+            coder_history.push(ChatMessage { role: yaml.role, content: yaml.content })
         );
     }
 
     // 拼接提示词
-    let prompt = format!(
+    let (mut reasoning_prompt, coder_prompt) = read_or_create_prompt();
+
+    reasoning_prompt = format!(
         "--- [ SYSTEM PROMPT ] ---\n{}\n\nCWD: {}\n--- [ DIRS ] ---\n{}----------------\nTHESE AIM TO HELP YOU KNOW ABOUT THE PROJECT",
-        read_or_create_prompt(),
+        reasoning_prompt,
         env::current_dir()?.to_string_lossy().to_string(),
         entries.join("\n")
     );
 
     // --- 注入提示词 ---
-    if IS_AUTO_LOAD_HISTORY && has_history {
-        tx_to_io.send(AppMessage::Prompt(prompt, Some(history)))?;
+    if !debug && has_history {
+        tx_to_io.send(AppMessage::SysMsg(SystemMessage::Prompt(prompt, Some(history))))?;
         app.history_display.push_str("聊天记录已加载");
     } else {
-        tx_to_io.send(AppMessage::Prompt(prompt, None))?;
+        tx_to_io.send(AppMessage::SysMsg(SystemMessage::Prompt(prompt, None)))?;
     }
 
-    let (ui_to_worker, worker_from_ui) = mpsc::channel();
-    let (worker_to_ui, ui_from_worker) = mpsc::channel();
+    let (ui_to_worker, worker_from_ui) = synv::mpsc::channel();
+    let (worker_to_ui, ui_from_worker) = synv::mpsc::channel();
 
     // --- 创建 Worker 线程 ---
     thread::spawn(move || {
         while let Ok(msg) = worker_from_ui.recv() {
             match msg {
-                AppMessage::ExecCommand(cmd) => {
+                AppMessage::SysMsg(SystemMessage::ExecCommand(cmd)) => {
                     let result = exec_cmd(&*cmd);
-                    let _ = worker_to_ui.send(AppMessage::ExecResult(result));
+                    let _ = worker_to_ui.send(AppMessage::SysMsg(SystemMessage::ExecResult(result)));
                 }
-                AppMessage::Diff(file_path, diff) => {
+                AppMessage::SysMsg(SystemMessage::Read(filename)) => {
+                    let content = read_file(filename.as_str());
+                    let _ = worker_to_ui.send(AppMessage::SysMsg(ReadResult(content)));
+                }
+                AppMessage::SysMsg(SystemMessage::Diff(file_path, diff)) => {
                     let result = match apply_patch(file_path.as_str(), diff.as_str()) {
                         Ok(_) => format!("Patch 成功应用至 <{}>", file_path),
                         Err(e) => e
                     };
 
-                    let _ = worker_to_ui.send(AppMessage::DiffResult(result));
+                    let _ = worker_to_ui.send(AppMessage::SysMsg(SystemMessage::DiffResult(result)));
                 }
                 _ => {}
             }
@@ -229,7 +277,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Constraint::Min(10),
                     Constraint::Length(3),
                 ])
-                .split(f.size());
+                .split(f.area());
 
             // --- 构建带样式的对话流 ---
             let mut lines = Vec::new();
@@ -311,7 +359,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             f.render_widget(input_block, chunks[1]);
 
             // --- 3. 渲染弹窗 (覆盖在最上方) ---
-            let area = centered_rect(60, 20, f.size());
+            let area = centered_rect(60, 20, f.area());
             let block = Block::default()
                 .title(" 确认执行？ ")
                 .borders(Borders::ALL)
@@ -344,36 +392,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
          */
         if let Ok(msg) = rx_from_io.try_recv() {
             match msg {
-                AppMessage::ModelChunk(chunk) => {
+                AppMessage::AIMsg(AssistantMessage::ModelChunk(chunk)) => {
                     app.current_ai_response.push_str(&chunk);
 
                     app.auto_scroll(terminal.size()?.height);
                 }
 
-                AppMessage::TaskComplete => {
+                AppMessage::AIMsg(AssistantMessage::TaskComplete) => {
                     let full_msg = std::mem::take(&mut app.current_ai_response);
                     // 刷新屏幕显示
                     app.history_display.push_str(&format!("\nASSISTANT:\n{}\n", full_msg));
                     // 更新 AGENT 输出上下文
-                    tx_to_io.send(AppMessage::AssistantReply(full_msg.clone()))?;
+                    tx_to_io.send(AppMessage::AIMsg(AssistantMessage::AssistantReply(full_msg.clone())))?;
 
                     /*
                      * --------[ 这里触发解析工具调用 ] --------
                      */
                     if let Some(call) = parse_tool_call(full_msg) {
                         match call.tool {
-                            Tool::Exec => {
-                                app.pending_action = PendingAction::ConfirmExec(call.content)
-                            }
-                            Tool::Diff(file_path) => {
-                                app.pending_action = PendingAction::ConfirmDiff(file_path, call.content)
-                            }
+                            Tool::Exec =>
+                                app.pending_action = PendingAction::ConfirmExec(call.content),
+                            Tool::Read =>
+                                ui_to_worker.send(AppMessage::SysMsg(SystemMessage::Read(call.content)))?,
+                            Tool::Diff(file_path) =>
+                                app.pending_action = PendingAction::ConfirmDiff(file_path, call.content),
                             _ => { }
                         }
                     }
                 }
 
-                AppMessage::SystemLog(log) => app.history_display.push_str(&format!("\n[ERROR]: {}\n", log)),
+                AppMessage::SysMsg(SystemMessage::SystemLog(log)) =>
+                    app.history_display.push_str(&format!("\n[ERROR]: {}\n", log)),
                 _ => {}
             }
         }
@@ -384,15 +433,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
          */
         if let Ok(msg) = ui_from_worker.try_recv() {
             match msg {
-                AppMessage::ExecResult(result) => {
+                AppMessage::SysMsg(SystemMessage::ExecResult(result)) => {
                     let result_feedback = format!(
                         "--- [ exec_result ] ---\n{}-----------------------", result
                     );
-                    tx_to_io.send(AppMessage::ExecResult(result_feedback))?;
+                    tx_to_io.send(AppMessage::SysMsg(SystemMessage::ExecResult(result_feedback)))?;
                 }
 
-                AppMessage::DiffResult(result) => tx_to_io.send(AppMessage::ExecResult(result))?,
-                AppMessage::SystemLog(log) => app.history_display.push_str(&format!("\n[ERROR]: {}\n", log)),
+                AppMessage::SysMsg(ReadResult(result)) =>
+                    tx_to_io.send(AppMessage::SysMsg(ReadResult(result)))?,
+
+                AppMessage::SysMsg(SystemMessage::DiffResult(result)) =>
+                    tx_to_io.send(AppMessage::SysMsg(SystemMessage::DiffResult(result)))?,
+
+                AppMessage::SysMsg(SystemMessage::SystemLog(log)) =>
+                    app.history_display.push_str(&format!("\n[ERROR]: {}\n", log)),
                 _ => {}
             }
         }
@@ -427,7 +482,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             PendingAction::None => app.input.push(c),
                             PendingAction::ConfirmExec(exec) => {
                                 if c == 'y' || c == 'Y' {
-                                    ui_to_worker.send(AppMessage::ExecCommand(exec.to_string()))?;
+                                    ui_to_worker.send(AppMessage::SysMsg(SystemMessage::ExecCommand(exec.to_string())))?;
                                     app.pending_action = PendingAction::None;
                                 } else if c == 'n' || c == 'N' {
                                     app.pending_action = PendingAction::None;
@@ -435,7 +490,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             PendingAction::ConfirmDiff(file_path, diff) => {
                                 if c == 'y' || c == 'Y' {
-                                    ui_to_worker.send(AppMessage::Diff(file_path.to_string(), diff.to_string()))?;
+                                    ui_to_worker.send(AppMessage::SysMsg(SystemMessage::Diff(file_path.to_string(), diff.to_string())))?;
                                     app.pending_action = PendingAction::None;
                                 } else if c == 'n' || c == 'N' {
                                     app.pending_action = PendingAction::None;

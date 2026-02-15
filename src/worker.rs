@@ -2,15 +2,43 @@ use std::fs;
 use std::process::Command;
 use diffy::{apply, Patch};
 
+#[allow(dead_code)]
 pub enum Tool {
     Exec,
+    Read,
     Diff(String),
-    Remem(usize)
+    Remem(usize),
+    Search(String)
 }
 
 pub struct Call {
     pub tool: Tool,
     pub content: String,
+}
+
+/// 验证文件路径是否在当前工作目录下，防止路径穿越攻击
+/// 返回解析后的安全路径
+fn resolve_safe_path(file_path: &str) -> Result<std::path::PathBuf, String> {
+    let base_dir = std::env::current_dir()
+        .map_err(|e| format!("无法获取当前工作目录: {}", e))?;
+
+    let full_path = base_dir.join(file_path);
+
+    use std::path::Component;
+    let mut normalized_path = std::path::PathBuf::new();
+    for component in full_path.components() {
+        match component {
+            Component::ParentDir => { normalized_path.pop(); }
+            Component::CurDir => {}
+            c => normalized_path.push(c),
+        }
+    }
+
+    if !normalized_path.starts_with(&base_dir) {
+        return Err(format!("越权访问: {}", file_path));
+    }
+
+    Ok(normalized_path)
 }
 
 pub fn parse_tool_call(msg: String) -> Option<Call> {
@@ -23,6 +51,10 @@ pub fn parse_tool_call(msg: String) -> Option<Call> {
             tool = Some(Tool::Exec);
             in_block = true;
             continue;
+        } else if line.starts_with("```read") {
+            let filename = line.strip_prefix("```read:")
+                .unwrap_or("").trim().to_string();
+            return Some(Call { tool: Tool::Read, content: filename })
         } else if line.starts_with("```diff") {
             // 安全地提取文件名，移除 ```diff 前缀
             let mut filename = line.strip_prefix("```diff:")
@@ -71,30 +103,19 @@ pub fn exec_cmd(cmd: &str) -> String {
     }
 }
 
-/// 验证文件路径是否在当前工作目录下，防止路径穿越攻击
-/// 返回解析后的安全路径
-fn resolve_safe_path(file_path: &str) -> Result<std::path::PathBuf, String> {
-    let base_dir = std::env::current_dir()
-        .map_err(|e| format!("无法获取当前工作目录: {}", e))?;
+pub fn read_file(filename: &str) -> String {
+    let mut output = String::new();
+    let full_content = fs::read_to_string(filename).unwrap();
 
-    let full_path = base_dir.join(file_path);
-
-    use std::path::Component;
-    let mut normalized_path = std::path::PathBuf::new();
-    for component in full_path.components() {
-        match component {
-            Component::ParentDir => { normalized_path.pop(); }
-            Component::CurDir => {}
-            c => normalized_path.push(c),
-        }
+    let mut count = 0;
+    for line in full_content.lines() {
+        count += 1;
+        output.push_str(format!("{}) {}\n", count, line).as_str());
     }
 
-    if !normalized_path.starts_with(&base_dir) {
-        return Err(format!("越权访问: {}", file_path));
-    }
-
-    Ok(normalized_path)
+    output
 }
+
 pub fn apply_patch(file_path: &str, diff: &str) -> Result<(), String> {
     // 安全校验：防止路径穿越攻击
     let safe_path = resolve_safe_path(file_path)?;

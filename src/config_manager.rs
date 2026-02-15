@@ -2,13 +2,16 @@ use std::io::Write;
 use serde::{Serialize, Deserialize};
 use std::path::PathBuf;
 use std::{fs, env};
-use crate::api_client::ChatMessage;
+use crate::api_client::{ChatMessage, Model};
 use chrono::Local;
+use crate::get_model;
 
 const ROOT_DIR: &str = ".oxicodent";
 const CONFIG_FILENAME: &str = "config.json";
-const PROMPT_FILENAME: &str = "prompt.md";
-const HISTORY_FILENAME: &str = ".oxicodent-history.yaml";
+const REASONING_PROMPT: &str = "reasoning_prompt.md";
+const CODER_PROMPT: &str = "coder_prompt.md";
+const REASONING_HISTORY: &str = ".coder_history.yaml";
+const CODER_HISTORY: &str = ".reasoning_history.yaml";
 
 fn get_home_path() -> PathBuf {
     let mut path = env::home_dir().unwrap();
@@ -23,7 +26,8 @@ fn get_home_path() -> PathBuf {
 pub struct Config {
     pub api_key: String,
     pub api_base: String, // 方便支持 Ollama 或自定义代理
-    pub model: String,
+    pub reasoning_model: String,
+    pub coder_model: String
 }
 
 impl Config {
@@ -43,9 +47,10 @@ impl Config {
 
             // 这里可以触发一个交互式提示，让用户输入 API Key
             let config = Config {
-                api_key: "YOUR_API_KEY".into(),
-                api_base: "https://api.anthropic.com/v1".into(),
-                model: "claude-3-5-sonnet-20241022".into(),
+                api_key: "".into(),
+                api_base: "http://127.0.0.1:11434/v1/chat/completions".into(),
+                reasoning_model: "qwen3-14b-32k:latest".into(),
+                coder_model: "qwen2.5-coder-14b-32k:latest".into()
             };
 
             let json = serde_json::to_string_pretty(&config).unwrap();
@@ -62,6 +67,12 @@ impl Config {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct History {
+    pub reasoning: Vec<HistoryYaml>,
+    pub coder: Vec<HistoryYaml>
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct HistoryYaml {
     time: String,
     pub role: String,
     pub content: String
@@ -70,52 +81,63 @@ pub struct History {
 impl History {
     pub fn update_history(msg: ChatMessage) {
         let time = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-
-        let history = History { time, role: msg.role, content: msg.content };
+        let history = HistoryYaml { time, role: msg.role, content: msg.content };
         let yaml = serde_yaml::to_string(&history).unwrap();
+
+        let model = get_model().read().unwrap().clone();
+        let filename = match model {
+            Model::Reasoning => REASONING_HISTORY,
+            Model::Coder => CODER_HISTORY,
+        };
 
         let mut file = fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(HISTORY_FILENAME).unwrap();
+            .open(filename).unwrap();
 
         writeln!(file, "{}---", yaml).unwrap();
     }
 
-    pub fn load_history() -> Result<Vec<Self>, Box<dyn std::error::Error>> {
-        let mut history: Vec<Self> = Vec::new();
-        let content = fs::read_to_string(HISTORY_FILENAME)?;
+    pub fn load_history() -> Result<Self, Box<dyn std::error::Error>> {
+        let reasoning_content = fs::read_to_string(REASONING_HISTORY)?;
+        let coder_content = fs::read_to_string(CODER_HISTORY)?;
 
-        let mut block = String::new();
-        for line in content.lines() {
-            if line != "---" {
-                block.push_str(format!("{}\n", line).as_str());
-            } else {
-                let yaml: Self = serde_yaml::from_str(&block)?;
-                history.push(yaml);
-                block = String::new();
+        let parse = | content: String | {
+            let mut vec = Vec::new();
+            let mut block = String::new();
+            for line in content.lines() {
+                if line != "---" {
+                    block.push_str(format!("{}\n", line).as_str());
+                } else {
+                    let yaml: HistoryYaml = serde_yaml::from_str(&block).unwrap();
+                    vec.push(yaml);
+                }
             }
+            vec
+        };
+
+        Ok(Self { reasoning: parse(reasoning_content), coder: parse(coder_content) })
+    }
+}
+
+pub fn read_or_create_prompt() -> (String, String) {
+    let home_path = get_home_path();
+
+    let read_or_create = | path: &str, default: &str | {
+        let target_path = home_path.clone().join(path);
+        if target_path.exists() {
+            fs::read_to_string(&path).unwrap()
+        } else {
+            fs::write(&path, default).unwrap();
+            default.to_string()
         }
+    };
 
-        Ok(history)
-    }
+    (read_or_create(REASONING_PROMPT, get_reasoning_prompt()),
+     read_or_create(CODER_PROMPT, get_coder_prompt()))
 }
 
-pub fn read_or_create_prompt() -> String {
-    let mut path = get_home_path();
-    path.push(PROMPT_FILENAME);
-
-    if path.exists() {
-        fs::read_to_string(&path).unwrap()
-    } else {
-        fs::write(&path, get_default_prompt_content()).unwrap();
-        println!("已在 ~/{}/{} 写入默认提示词，可随时更改", ROOT_DIR, PROMPT_FILENAME);
-        get_default_prompt_content().to_string()
-    }
-
-}
-
-fn get_default_prompt_content() -> &'static str {
+fn get_reasoning_prompt() -> &'static str {
 r#"# Role: Oxicodent Agent - 强大的 Coding Agent
 
 你是一个风趣幽默，精通多种语言的开发，架构，运维专家。你喜欢和用户一起讨论技术选型，代码设计，在他们需要的时候帮他们解决代码问题
@@ -177,4 +199,8 @@ cargo check
 - **进度意识**：时刻清楚"我在哪一步"、"下一步是什么"、"完成标志是什么"
 - **质量第一**：宁可慢一点，也要确保每一步都是正确的
 "#
+}
+
+fn get_coder_prompt() -> &'static str {
+    "Hello"
 }

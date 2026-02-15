@@ -2,6 +2,7 @@ use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use crate::{get_model, AssistantMessage, SystemMessage};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ChatMessage {
@@ -20,7 +21,14 @@ pub struct ApiClient {
     client: Client,
     api_key: String,
     api_base: String,
-    model: String,
+    reasoning_model: String,
+    coder_model: String
+}
+
+#[derive(Clone)]
+pub enum Model {
+    Reasoning,
+    Coder
 }
 
 impl ApiClient {
@@ -42,14 +50,22 @@ impl ApiClient {
             client,
             api_key: config.api_key.clone(),
             api_base: config.api_base.clone(),
-            model: config.model.clone(),
+            reasoning_model: config.reasoning_model.clone(),
+            coder_model: config.coder_model.clone(),
         }
     }
 
     pub fn send_chat_stream(&self, messages: Vec<ChatMessage>, tx: std::sync::mpsc::Sender<crate::AppMessage>) {
         let url = format!("{}", self.api_base);
+
+        let model = get_model().read().unwrap().clone();
+        let model = match model {
+            Model::Reasoning => self.reasoning_model.clone(),
+            Model::Coder => self.coder_model.clone()
+        };
+
         let request_body = ChatRequest {
-            model: self.model.clone(),
+            model,
             messages,
             stream: true,
         };
@@ -76,7 +92,7 @@ impl ApiClient {
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
                             if let Some(content) = json["choices"][0]["delta"]["content"].as_str() {
                                 // 通过通道传回主线程
-                                let _ = tx.send(crate::AppMessage::ModelChunk(content.to_string()));
+                                let _ = tx.send(crate::AppMessage::AIMsg(AssistantMessage::ModelChunk(content.to_string())));
                             }
                         }
                     }
@@ -90,9 +106,9 @@ impl ApiClient {
                 } else {
                     error_msg
                 };
-                let _ = tx.send(crate::AppMessage::SystemLog(safe_msg));
+                let _ = tx.send(crate::AppMessage::SysMsg(SystemMessage::SystemLog(safe_msg)));
             }
         }
-        let _ = tx.send(crate::AppMessage::TaskComplete);
+        let _ = tx.send(crate::AppMessage::AIMsg(AssistantMessage::TaskComplete));
     }
 }
