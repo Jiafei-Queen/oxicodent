@@ -10,8 +10,6 @@ const ROOT_DIR: &str = ".oxicodent";
 const CONFIG_FILENAME: &str = "config.json";
 const REASONING_PROMPT: &str = "reasoning_prompt.md";
 const CODER_PROMPT: &str = "coder_prompt.md";
-const REASONING_HISTORY: &str = ".coder_history.yaml";
-const CODER_HISTORY: &str = ".reasoning_history.yaml";
 
 fn get_home_path() -> PathBuf {
     let mut path = env::home_dir().unwrap();
@@ -27,7 +25,8 @@ pub struct Config {
     pub api_key: String,
     pub api_base: String, // 方便支持 Ollama 或自定义代理
     pub reasoning_model: String,
-    pub coder_model: String
+    pub coder_model: String,
+    pub instruct_model: String,
 }
 
 impl Config {
@@ -51,6 +50,7 @@ impl Config {
                 api_base: "http://127.0.0.1:11434/v1/chat/completions".into(),
                 reasoning_model: "qwen3-14b-32k:latest".into(),
                 coder_model: "qwen2.5-coder-14b-32k:latest".into()
+                ,instruct_model: "qwen3-4b-32k-instruct:latest".into()
             };
 
             let json = serde_json::to_string_pretty(&config).unwrap();
@@ -62,61 +62,6 @@ impl Config {
 
             std::process::exit(0);
         }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct History {
-    pub reasoning: Vec<HistoryYaml>,
-    pub coder: Vec<HistoryYaml>
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct HistoryYaml {
-    time: String,
-    pub role: String,
-    pub content: String
-}
-
-impl History {
-    pub fn update_history(msg: ChatMessage) {
-        let time = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        let history = HistoryYaml { time, role: msg.role, content: msg.content };
-        let yaml = serde_yaml::to_string(&history).unwrap();
-
-        let model = get_model().read().unwrap().clone();
-        let filename = match model {
-            Model::Reasoning => REASONING_HISTORY,
-            Model::Coder => CODER_HISTORY,
-        };
-
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(filename).unwrap();
-
-        writeln!(file, "{}---", yaml).unwrap();
-    }
-
-    pub fn load_history() -> Result<Self, Box<dyn std::error::Error>> {
-        let reasoning_content = fs::read_to_string(REASONING_HISTORY)?;
-        let coder_content = fs::read_to_string(CODER_HISTORY)?;
-
-        let parse = | content: String | {
-            let mut vec = Vec::new();
-            let mut block = String::new();
-            for line in content.lines() {
-                if line != "---" {
-                    block.push_str(format!("{}\n", line).as_str());
-                } else {
-                    let yaml: HistoryYaml = serde_yaml::from_str(&block).unwrap();
-                    vec.push(yaml);
-                }
-            }
-            vec
-        };
-
-        Ok(Self { reasoning: parse(reasoning_content), coder: parse(coder_content) })
     }
 }
 

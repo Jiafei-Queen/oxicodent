@@ -22,13 +22,15 @@ pub struct ApiClient {
     api_key: String,
     api_base: String,
     reasoning_model: String,
-    coder_model: String
+    coder_model: String,
+    instruct_model: String
 }
 
 #[derive(Clone)]
 pub enum Model {
     Reasoning,
-    Coder
+    Coder,
+    Instruct
 }
 
 impl ApiClient {
@@ -52,6 +54,7 @@ impl ApiClient {
             api_base: config.api_base.clone(),
             reasoning_model: config.reasoning_model.clone(),
             coder_model: config.coder_model.clone(),
+            instruct_model: config.instruct_model.clone()
         }
     }
 
@@ -61,7 +64,8 @@ impl ApiClient {
         let model = get_model().read().unwrap().clone();
         let model = match model {
             Model::Reasoning => self.reasoning_model.clone(),
-            Model::Coder => self.coder_model.clone()
+            Model::Coder => self.coder_model.clone(),
+            Model::Instruct => self.instruct_model.clone()
         };
 
         let request_body = ChatRequest {
@@ -89,7 +93,7 @@ impl ApiClient {
                         if data == "[DONE]" { break; }
 
                         // 解析 JSON 提取文本片段 (Chunk)
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
                             if let Some(content) = json["choices"][0]["delta"]["content"].as_str() {
                                 // 通过通道传回主线程
                                 let _ = tx.send(crate::AppMessage::AIMsg(AssistantMessage::ModelChunk(content.to_string())));

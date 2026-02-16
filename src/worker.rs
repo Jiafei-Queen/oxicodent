@@ -7,7 +7,6 @@ pub enum Tool {
     Exec,
     Read,
     Diff(String),
-    Remem(usize),
     Search(String)
 }
 
@@ -62,8 +61,6 @@ pub fn parse_tool_call(msg: String) -> Option<Call> {
 
             // 移除可能的前后引号
             if filename.starts_with('"') && filename.ends_with('"') {
-                filename = filename[1..filename.len()-1].to_string();
-            } else if filename.starts_with('\'') && filename.ends_with('\'') {
                 filename = filename[1..filename.len()-1].to_string();
             }
 

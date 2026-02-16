@@ -16,7 +16,7 @@ use crossterm::{
 };
 
 use std::sync::{mpsc, RwLock, Arc, OnceLock};
-use std::{io, sync, thread, time::Duration, env, fs};
+use std::{io, thread, time::Duration, env, fs};
 use ratatui::layout::Alignment;
 use ratatui::text::{Line, Span};
 use crate::api_client::{ChatMessage, ApiClient, Model};
@@ -37,8 +37,8 @@ enum AssistantMessage {
 }
 
 enum SystemMessage {
-    // 提示词：reasoning, coder, history
-    Prompt(String, String, Option<Vec<ChatMessage>>),
+    // 提示词：reasoning, coder
+    Prompt(String, String),
     // 命令执行
     ExecCommand(String),
     ExecResult(String),
@@ -116,20 +116,14 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: ratatui::layout::Rect) -> ra
 
 #[cfg(unix)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut debug = false;
-    let args: Vec<String> = env::args().skip(1).collect();
-    if args.len() == 1 && args[0].as_str() == "--debug" {
-        debug = true;
-    }
-
     // --- 终端初始化 ---
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
 
     // --- 通信与后台线程 ---
-    let (tx_to_io, rx_from_ui) = sync::mpsc::channel();
-    let (tx_to_ui, rx_from_io) = sync::mpsc::channel();
+    let (tx_to_io, rx_from_ui) = mpsc::channel();
+    let (tx_to_ui, rx_from_io) = mpsc::channel();
     let client = ApiClient::new(&Config::load_or_init());
 
     // --- 创建应用变量 ---
@@ -142,42 +136,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         is_auto_scroll: true,
     };
 
-    let mut current_model = Arc::new(RwLock::new(Model::Reasoning));
-
     /*
      * -------- [ 创建 IO 线程 ] --------
      */
     thread::spawn(move || {
-        let mut reasoning_history: Vec<ChatMessage> = Vec::new();
+        let mut reasoning_history = Vec::<ChatMessage>::new();
+        let mut coder_history = Vec::<ChatMessage>::new();
+        let mut instruct_history = Vec::<ChatMessage>::new();
 
         while let Ok(msg) = rx_from_ui.recv() {
+            let model = get_model().read().unwrap().clone();
+            let history = match model {
+                Model::Reasoning => &mut reasoning_history,
+                Model::Coder => &mut coder_history,
+                Model::Instruct => &mut instruct_history,
+            };
 
             let mut handle_system_result = | result: String | {
                 let chat_msg = ChatMessage { role: "system".into(), content: result };
                 history.push(chat_msg.clone());
-                History::update_history(chat_msg.clone());
                 client.send_chat_stream(history.clone(), tx_to_ui.clone());
             };
 
             match msg {
-                AppMessage::Prompt(content, old_his) => {
-                    history.push(ChatMessage { role: "system".into(), content });
-                    if let Some(his) = old_his {
-                        history.extend(his);
-                    }
-                    client.send_chat_stream(history.clone() , tx_to_ui.clone());
+                AppMessage::SysMsg(SystemMessage::Prompt(reasoning_prompt, coder_prompt)) => {
+                    reasoning_history.push(ChatMessage { role: "prompt".into(), content: reasoning_prompt });
+                    coder_history.push(ChatMessage { role: "prompt".into(), content: coder_prompt });
                 }
 
                 AppMessage::UserQuery(content) => {
                     let chat_msg = ChatMessage { role: "user".into(), content };
                     history.push(chat_msg.clone());
-                    History::update_history(chat_msg.clone());
                     client.send_chat_stream(history.clone(), tx_to_ui.clone());
                 }
                 AppMessage::AIMsg(AssistantMessage::AssistantReply(content)) => {
                     let chat_msg = ChatMessage { role: "assistant".into(), content };
                     history.push(chat_msg.clone());
-                    History::update_history(chat_msg.clone());
                 }
                 AppMessage::SysMsg(SystemMessage::ExecResult(result)) => {
                     handle_system_result(result);
@@ -200,26 +194,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         entries.push(path.file_name().unwrap().to_string_lossy().to_string());
     }
 
-
-    // --- 加载聊天记录 ---
-    let mut has_history = false;
-    let mut reasoning_history: Vec<ChatMessage> = Vec::new();
-    let mut coder_history: Vec<ChatMessage> = Vec::new();
-    if let Ok(old) = History::load_history() {
-        let old_reasoning_history = old.reasoning.clone();
-        let old_coder_history = old.coder.clone();
-
-        if old_reasoning_history.len() != 0 || old_coder_history.len() != 0 { has_history = true }
-
-        let _ = old_reasoning_history.iter().for_each(|yaml|
-            reasoning_history.push(ChatMessage { role: yaml.role, content: yaml.content })
-        );
-
-        let _ = old_coder_history.iter().for_each(|yaml|
-            coder_history.push(ChatMessage { role: yaml.role, content: yaml.content })
-        );
-    }
-
     // 拼接提示词
     let (mut reasoning_prompt, coder_prompt) = read_or_create_prompt();
 
@@ -230,16 +204,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         entries.join("\n")
     );
 
-    // --- 注入提示词 ---
-    if !debug && has_history {
-        tx_to_io.send(AppMessage::SysMsg(SystemMessage::Prompt(prompt, Some(history))))?;
-        app.history_display.push_str("聊天记录已加载");
-    } else {
-        tx_to_io.send(AppMessage::SysMsg(SystemMessage::Prompt(prompt, None)))?;
-    }
+    tx_to_io.send(AppMessage::SysMsg(SystemMessage::Prompt(reasoning_prompt, coder_prompt)))?;
 
-    let (ui_to_worker, worker_from_ui) = synv::mpsc::channel();
-    let (worker_to_ui, ui_from_worker) = synv::mpsc::channel();
+    let (ui_to_worker, worker_from_ui) = mpsc::channel();
+    let (worker_to_ui, ui_from_worker) = mpsc::channel();
 
     // --- 创建 Worker 线程 ---
     thread::spawn(move || {
