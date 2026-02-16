@@ -1,14 +1,9 @@
 use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, AUTHORIZATION, CONTENT_TYPE};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::time::Duration;
 use crate::{get_model, AssistantMessage, SystemMessage};
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct ChatMessage {
-    pub role: String,
-    pub content: String,
-}
+use crate::app::{ChatMessage, Model};
 
 #[derive(Serialize)]
 struct ChatRequest {
@@ -24,13 +19,6 @@ pub struct ApiClient {
     reasoning_model: String,
     coder_model: String,
     instruct_model: String
-}
-
-#[derive(Clone)]
-pub enum Model {
-    Reasoning,
-    Coder,
-    Instruct
 }
 
 impl ApiClient {

@@ -1,10 +1,6 @@
-use std::io::Write;
 use serde::{Serialize, Deserialize};
 use std::path::PathBuf;
 use std::{fs, env};
-use crate::api_client::{ChatMessage, Model};
-use chrono::Local;
-use crate::get_model;
 
 const ROOT_DIR: &str = ".oxicodent";
 const CONFIG_FILENAME: &str = "config.json";
