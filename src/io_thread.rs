@@ -24,16 +24,16 @@ impl IOThread {
         thread::spawn(move || {
             let client = ApiClient::new(&Config::load_or_init());
 
-            let mut reasoning_history = Vec::<ChatMessage>::new();
-            let mut coder_history = Vec::<ChatMessage>::new();
-            let mut instruct_history = Vec::<ChatMessage>::new();
+            let mut melchior_history = Vec::<ChatMessage>::new();
+            let mut casper_history = Vec::<ChatMessage>::new();
+            let mut balthazar_history = Vec::<ChatMessage>::new();
 
             while let Ok(msg) = rx_from_ui.recv() {
                 let model = get_model().read().unwrap().clone();
                 let history = match model {
-                    Model::Reasoning => &mut reasoning_history,
-                    Model::Coder => &mut coder_history,
-                    Model::Instruct => &mut instruct_history,
+                    Model::MELCHIOR => &mut melchior_history,
+                    Model::CASPER => &mut casper_history,
+                    Model::BALTHAZAR => &mut balthazar_history,
                 };
 
                 let mut handle_system_result = |result: String| {
@@ -44,8 +44,8 @@ impl IOThread {
 
                 match msg {
                     AppMessage::SysMsg(SystemMessage::Prompt(reasoning_prompt, coder_prompt)) => {
-                        reasoning_history.push(ChatMessage { role: "prompt".into(), content: reasoning_prompt });
-                        coder_history.push(ChatMessage { role: "prompt".into(), content: coder_prompt });
+                        melchior_history.push(ChatMessage { role: "prompt".into(), content: reasoning_prompt });
+                        casper_history.push(ChatMessage { role: "prompt".into(), content: coder_prompt });
                     }
 
                     AppMessage::UserQuery(content) => {

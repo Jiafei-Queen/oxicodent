@@ -16,9 +16,9 @@ pub struct ApiClient {
     client: Client,
     api_key: String,
     api_base: String,
-    reasoning_model: String,
-    coder_model: String,
-    instruct_model: String
+    melchior_model: String,
+    casper_model: String,
+    balthazar_model: String
 }
 
 impl ApiClient {
@@ -40,9 +40,9 @@ impl ApiClient {
             client,
             api_key: config.api_key.clone(),
             api_base: config.api_base.clone(),
-            reasoning_model: config.reasoning_model.clone(),
-            coder_model: config.coder_model.clone(),
-            instruct_model: config.instruct_model.clone()
+            melchior_model: config.reasoning_model.clone(),
+            casper_model: config.coder_model.clone(),
+            balthazar_model: config.instruct_model.clone()
         }
     }
 
@@ -51,9 +51,9 @@ impl ApiClient {
 
         let model = get_model().read().unwrap().clone();
         let model = match model {
-            Model::Reasoning => self.reasoning_model.clone(),
-            Model::Coder => self.coder_model.clone(),
-            Model::Instruct => self.instruct_model.clone()
+            Model::MELCHIOR => self.melchior_model.clone(),
+            Model::CASPER => self.casper_model.clone(),
+            Model::BALTHAZAR => self.balthazar_model.clone()
         };
 
         let request_body = ChatRequest {

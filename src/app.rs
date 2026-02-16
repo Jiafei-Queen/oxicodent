@@ -48,9 +48,9 @@ pub struct ChatMessage {
 #[allow(dead_code)]
 #[derive(Clone)]
 pub enum Model {
-    Reasoning,
-    Coder,
-    Instruct
+    MELCHIOR,
+    CASPER,
+    BALTHAZAR
 }
 
 #[allow(dead_code)]
@@ -70,7 +70,7 @@ static CURRENT_MODEL: OnceLock<Arc<RwLock<Model>>> = OnceLock::new();
 
 pub fn get_model() -> &'static Arc<RwLock<Model>> {
     CURRENT_MODEL.get_or_init(|| {
-        Arc::new(RwLock::new(Model::Reasoning))
+        Arc::new(RwLock::new(Model::MELCHIOR))
     })
 }
 
