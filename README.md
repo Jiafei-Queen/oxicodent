@@ -4,7 +4,18 @@
 
 > 本项目关注的是 **高效的人机协作** 与 **高质量的模型输出**，如果是想找能帮你自动写代码的 Agent，那可以划走了
 
-Oxicodent 是一个增强型开发助手。它通过‘注意力分离’架构，将架构思维与代码执行解耦。它让开发者通过自然语言与 Reasoning 模块磨合设计，并由 Coder 模块在极净上下文中精准生成代码补丁。它不取代人的决策，而是通过 Markdown 工具链消除繁琐的搬砖工作。
+Oxicodent 是一个 **增强型开发助手**，它通过 **注意力分离** 架构 
+将架构思维与代码执行解耦。
+- 它让开发者通过自然语言与 Reasoning 模块磨合设计
+- 并由 Coder 模块在极净上下文中精准生成代码补丁
+
+它不取代人的决策，而是通过 Markdown 工具链消除繁琐的搬砖工作。
+
+**M.A.G.I. 三贤人设计**
+- Multithreaded Async Granular Instruction
+- - 多线程 异步 粒度化 指令
+- Modular Attention Governance Interface
+- - 模块化 注意力 治理 接口
 
 ## ⚠️ WARNING / 警告
 
