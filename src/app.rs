@@ -17,8 +17,8 @@ pub enum AssistantMessage {
 }
 
 pub enum SystemMessage {
-    // 提示词：reasoning, coder
-    Prompt(String, String),
+    // 提示词：MELCHIOR, CASPER I, CASPER II
+    Prompt(String, String, String),
     // 命令执行
     ExecCommand(String),
     ExecResult(String),
@@ -49,7 +49,8 @@ pub struct ChatMessage {
 #[derive(Clone)]
 pub enum Model {
     MELCHIOR,
-    CASPER,
+    CASPER_I,
+    CASPER_II,
     BALTHAZAR
 }
 

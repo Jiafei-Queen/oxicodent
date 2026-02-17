@@ -2,6 +2,7 @@ use crate::{PendingAction, AppTerminal, get_logo_text};
 
 use ratatui::{text::{Line, Span}, layout::{Constraint, Direction, Layout, Alignment}, widgets::{Block, Borders, Paragraph, Wrap}, style::{Style, Color}, Terminal};
 use ratatui::backend::CrosstermBackend;
+use crate::app::{get_model, Model};
 
 pub struct Ui {
     terminal: AppTerminal,
@@ -32,7 +33,7 @@ impl Ui {
         let chat_height = terminal_height.saturating_sub(5);
 
         // 计算当前显示的所有行数（包括 Logo 和 历史记录）
-        let logo_lines = 12;
+        let logo_lines = 14;
         let history_lines = self.history_display.lines().count() as u16;
         let current_ai_lines = self.current_ai_response.lines().count() as u16;
 
@@ -102,10 +103,17 @@ impl Ui {
 
             // C. 渲染正在生成的 AI 回复
             if !self.current_ai_response.is_empty() {
+                let model = match get_model().read().unwrap().clone() {
+                    Model::MELCHIOR => "MELCHIOR",
+                    Model::CASPER_I => "CASPER I",
+                    Model::CASPER_II => "CASPER II",
+                    Model::BALTHAZAR => "BALTHAZAR"
+                };
+
                 // 先添加 ASSISTANT: 标签行
                 lines.push(
                     Line::from(Span::styled(
-                        "\nASSISTANT:",
+                        format!("\nASSISTANT: {}", model),
                         Style::default().fg(Color::Cyan),
                     ))
                         .alignment(Alignment::Left),

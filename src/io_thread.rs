@@ -2,7 +2,6 @@ use std::sync::mpsc;
 use std::thread;
 use crate::api_client::ApiClient;
 use crate::app::*;
-use crate::config_manager::Config;
 use crate::ui::Ui;
 use crate::worker_thread::{parse_tool_call, WorkerThread};
 
@@ -17,22 +16,27 @@ impl IOThread {
     }
 
     /* -------- [ 创建 IO 线程 ] -------- */
-    pub fn spawn() -> IOThread {
+    pub fn spawn() -> Result<IOThread, String> {
         let (tx_to_io, rx_from_ui) = mpsc::channel();
         let (tx_to_ui, rx_from_io) = mpsc::channel();
 
         thread::spawn(move || {
-            let client = ApiClient::new(&Config::load_or_init());
+            let client = match ApiClient::new() {
+                Err(e) => { eprintln!("{}", e); std::process::exit(1) }
+                Ok(c) => c
+            };
 
             let mut melchior_history = Vec::<ChatMessage>::new();
-            let mut casper_history = Vec::<ChatMessage>::new();
+            let mut casper_one_history = Vec::<ChatMessage>::new();
+            let mut casper_two_history = Vec::<ChatMessage>::new();
             let mut balthazar_history = Vec::<ChatMessage>::new();
 
             while let Ok(msg) = rx_from_ui.recv() {
                 let model = get_model().read().unwrap().clone();
                 let history = match model {
                     Model::MELCHIOR => &mut melchior_history,
-                    Model::CASPER => &mut casper_history,
+                    Model::CASPER_I => &mut casper_one_history,
+                    Model::CASPER_II => &mut casper_two_history,
                     Model::BALTHAZAR => &mut balthazar_history,
                 };
 
@@ -43,9 +47,10 @@ impl IOThread {
                 };
 
                 match msg {
-                    AppMessage::SysMsg(SystemMessage::Prompt(reasoning_prompt, coder_prompt)) => {
-                        melchior_history.push(ChatMessage { role: "prompt".into(), content: reasoning_prompt });
-                        casper_history.push(ChatMessage { role: "prompt".into(), content: coder_prompt });
+                    AppMessage::SysMsg(SystemMessage::Prompt(melchior, casper_one, casper_two)) => {
+                        melchior_history.push(ChatMessage { role: "prompt".into(), content: melchior });
+                        casper_one_history.push(ChatMessage { role: "prompt".into(), content: casper_one });
+                        casper_two_history.push(ChatMessage { role: "prompt".into(), content: casper_two });
                     }
 
                     AppMessage::UserQuery(content) => {
@@ -71,7 +76,7 @@ impl IOThread {
             }
         });
 
-        IOThread { tx_to_io, rx_from_io }
+        Ok(IOThread { tx_to_io, rx_from_io })
     }
 
     /*
@@ -90,6 +95,8 @@ impl IOThread {
                     let full_msg = ui.current_ai_response.clone();
                     // 刷新屏幕显示
                     ui.history_display.push_str(&format!("\nASSISTANT:\n{}\n", full_msg));
+                    // 清空当前正在生成的回复，避免重复显示
+                    ui.current_ai_response.clear();
                     // 更新 AGENT 输出上下文
                     self.send(AppMessage::AIMsg(AssistantMessage::AssistantReply(full_msg.clone())));
 

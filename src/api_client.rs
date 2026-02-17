@@ -22,28 +22,30 @@ pub struct ApiClient {
 }
 
 impl ApiClient {
-    pub fn new(config: &crate::Config) -> Self {
+    pub fn new() -> Result<Self, String> {
+        let config = crate::Config::load_or_init()?;
+
         let mut headers = HeaderMap::new();
-        headers.insert(CONTENT_TYPE, "application/json".parse().unwrap());
+        headers.insert(CONTENT_TYPE, "application/json".parse().expect("无法添加 JSON Header"));
         headers.insert(
             AUTHORIZATION,
-            format!("Bearer {}", config.api_key).parse().unwrap(),
+            format!("Bearer {}", config.api_key).parse().expect("无法解析 API 校验 Header"),
         );
 
         let client = Client::builder()
             .default_headers(headers)
             .timeout(Duration::from_secs(60))
             .build()
-            .unwrap();
+            .expect("无法创建 Client");
 
-        Self {
+        Ok(Self {
             client,
             api_key: config.api_key.clone(),
             api_base: config.api_base.clone(),
-            melchior_model: config.reasoning_model.clone(),
-            casper_model: config.coder_model.clone(),
-            balthazar_model: config.instruct_model.clone()
-        }
+            melchior_model: config.melchior_model.clone(),
+            casper_model: config.casper_model.clone(),
+            balthazar_model: config.balthazar_model.clone()
+        })
     }
 
     pub fn send_chat_stream(&self, messages: Vec<ChatMessage>, tx: std::sync::mpsc::Sender<crate::AppMessage>) {
@@ -52,7 +54,7 @@ impl ApiClient {
         let model = get_model().read().unwrap().clone();
         let model = match model {
             Model::MELCHIOR => self.melchior_model.clone(),
-            Model::CASPER => self.casper_model.clone(),
+            Model::CASPER_I | Model::CASPER_II => self.casper_model.clone(),
             Model::BALTHAZAR => self.balthazar_model.clone()
         };
 

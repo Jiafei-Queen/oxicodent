@@ -2,10 +2,11 @@ use std::time::Duration;
 use crate::ui::Ui;
 use crate::io_thread::IOThread;
 use crate::app::{AppMessage, PendingAction, SystemMessage};
+use crate::worker_thread::WorkerThread;
 use crossterm::{
     event::{self, Event, KeyCode},
 };
-use crate::worker_thread::WorkerThread;
+
 /*
  * -------- [ 键盘事件监听 ] --------
  * - 负责修改处理输入

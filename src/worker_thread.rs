@@ -57,7 +57,7 @@ impl WorkerThread {
             match msg {
                 AppMessage::SysMsg(SystemMessage::ExecResult(result)) => {
                     let result_feedback = format!(
-                        "--- [ exec_result ] ---\n{}-----------------------", result
+                        "System: Execute Result:\n{}", result
                     );
                     io_thread.send(AppMessage::SysMsg(SystemMessage::ExecResult(result_feedback)));
                 }
