@@ -73,7 +73,7 @@ pub fn get_model() -> &'static Arc<RwLock<Model>> {
     })
 }
 
-pub const MELCHIOR_PROMPT: &str = include_str!("../prompt/MELCHIOR_PROMPT.md");
+pub const MELCHIOR_PROMPT: &str = include_str!("../prompt/MELCHIOR_INIT_PROMPT.md");
 pub const CASPER_I_PROMPT: &str = include_str!("../prompt/CASPER_I_PROMPT.md");
 pub const CASPER_II_PROMPT: &str = include_str!("../prompt/CASPER_II_PROMPT.md");
 

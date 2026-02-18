@@ -1,5 +1,7 @@
 use std::sync::mpsc;
-use std::thread;
+use std::{env, thread};
+use std::fs;
+use tracing::info;
 use crate::api_client::ApiClient;
 use crate::app::*;
 use crate::ui::Ui;
@@ -26,41 +28,24 @@ impl IOThread {
                 Ok(c) => c
             };
 
-            let mut melchior_history = Vec::<ChatMessage>::new();
-            melchior_history.push(ChatMessage { role: "prompt".into(), content: MELCHIOR_PROMPT.into() });
-
-            let mut casper_one_history = Vec::<ChatMessage>::new();
-            casper_one_history.push(ChatMessage { role: "prompt".into(), content: CASPER_I_PROMPT.into() });
-
-            let mut casper_two_history = Vec::<ChatMessage>::new();
-            casper_two_history.push(ChatMessage { role: "prompt".into(), content: CASPER_II_PROMPT.into() });
-
-            let mut balthazar_history = Vec::<ChatMessage>::new();
+            let mut history = History::new(&client, tx_to_ui.clone());
 
             while let Ok(msg) = rx_from_ui.recv() {
-                let model = get_model().read().unwrap().clone();
-                let history = match model {
-                    Model::MELCHIOR => &mut melchior_history,
-                    Model::CASPER_I => &mut casper_one_history,
-                    Model::CASPER_II => &mut casper_two_history,
-                    Model::BALTHAZAR => &mut balthazar_history,
-                };
-
                 let mut handle_system_result = |result: String| {
                     let chat_msg = ChatMessage { role: "system".into(), content: result };
-                    history.push(chat_msg.clone());
-                    client.send_chat_stream(history.clone(), tx_to_ui.clone());
+                    history.push(chat_msg);
+                    history.send(&client, tx_to_ui.clone())
                 };
 
                 match msg {
                     AppMessage::UserQuery(content) => {
                         let chat_msg = ChatMessage { role: "user".into(), content };
-                        history.push(chat_msg.clone());
-                        client.send_chat_stream(history.clone(), tx_to_ui.clone());
+                        history.push(chat_msg);
+                        history.send(&client, tx_to_ui.clone());
                     }
                     AppMessage::AIMsg(AssistantMessage::AssistantReply(content)) => {
                         let chat_msg = ChatMessage { role: "assistant".into(), content };
-                        history.push(chat_msg.clone());
+                        history.push(chat_msg);
                     }
                     AppMessage::SysMsg(SystemMessage::ExecResult(result)) => {
                         handle_system_result(result);
@@ -104,6 +89,7 @@ impl IOThread {
                      * --------[ 这里触发解析工具调用 ] --------
                      */
                     if let Some(call) = parse_tool_call(full_msg) {
+                        info!("正在处理工具调用");
                         match call.tool {
                             Tool::Exec =>
                                 ui.pending_action = PendingAction::ConfirmExec(call.content),
@@ -121,5 +107,70 @@ impl IOThread {
                 _ => {}
             }
         }
+    }
+}
+
+struct History {
+    melchior_history: Vec<ChatMessage>,
+    casper_i_history: Vec<ChatMessage>,
+    casper_ii_history: Vec<ChatMessage>,
+    balthazar_history: Vec<ChatMessage>
+}
+
+impl History {
+    fn match_history(&mut self) -> &mut Vec<ChatMessage> {
+        match get_model().read().unwrap().clone() {
+            Model::MELCHIOR => &mut self.melchior_history,
+            Model::CASPER_I => &mut self.casper_i_history,
+            Model::CASPER_II => &mut self.casper_ii_history,
+            Model::BALTHAZAR => &mut self.balthazar_history
+        }
+    }
+
+    pub fn new(client: &ApiClient, sender: mpsc::Sender<AppMessage>) -> Self {
+        let to_msg = |content: String| {
+            ChatMessage { role: "system".into(), content }
+        };
+
+        let cwd = env::current_dir().unwrap().to_string_lossy().to_string();
+        let mut paths = cwd.clone();
+        for entry in fs::read_dir(".").unwrap() {
+            paths.push_str("\n|-- ");
+            paths.push_str(entry.unwrap().path().to_str().unwrap());
+        }
+
+        info!("MELCHIOR 提示词目录结构：\n```\n{}\n```", paths);
+
+        let mut melchior_history = Vec::<ChatMessage>::new();
+        melchior_history.push(to_msg(MELCHIOR_PROMPT.replace("{{ENTRIES}}", paths.as_str()).to_string()));
+        let mut casper_i_history = Vec::<ChatMessage>::new();
+        casper_i_history.push(to_msg(CASPER_I_PROMPT.to_string()));
+        let mut casper_ii_history = Vec::<ChatMessage>::new();
+        casper_ii_history.push(to_msg(CASPER_II_PROMPT.to_string()));
+
+        let history = Self {
+            melchior_history,
+            casper_i_history,
+            casper_ii_history,
+            balthazar_history: Vec::<ChatMessage>::new()
+        };
+
+        history.send(client, sender);
+        history
+    }
+
+    pub fn push(&mut self, msg: ChatMessage) {
+        Self::match_history(self).push(msg)
+    }
+
+    pub fn send(&self, api_client: &ApiClient, sender: mpsc::Sender<AppMessage>) {
+        let history = match get_model().read().unwrap().clone() {
+            Model::MELCHIOR => self.melchior_history.clone(),
+            Model::CASPER_I => self.casper_i_history.clone(),
+            Model::CASPER_II => self.casper_ii_history.clone(),
+            Model::BALTHAZAR => self.balthazar_history.clone()
+        };
+
+        api_client.send_chat_stream(history, sender);
     }
 }

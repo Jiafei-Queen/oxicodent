@@ -11,8 +11,10 @@ use crossterm::{
     ExecutableCommand,
 };
 
+use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use std::io;
 use crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
+use tracing::info;
 use crate::config_manager::*;
 use crate::app::*;
 use crate::event_handler::handle_event;
@@ -22,21 +24,36 @@ use crate::worker_thread::WorkerThread;
 
 #[cfg(unix)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // --- [ 初始化日志 ] ---
+    let log_file = std::fs::File::create(".oxicodent.log")?;
+    tracing_subscriber::registry()
+        .with(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("debug"))  // ← 默认 debug 级别
+        )
+        .with(fmt::layer().with_writer(log_file))
+        .init();
+
+    info!(":: Oxicodent ::    (v{})", env!("CARGO_PKG_VERSION"));
+
     // --- 创建 IO 线程 ---
     let mut io_thread = IOThread::spawn()?;
+    info!("IO 线程已创建");
 
     // --- 创建 Worker 线程 ---
     let mut worker_thread = WorkerThread::spawn();
+    info!("Worker 线程已创建");
 
     // --- 创建 UI ---
     let mut ui = Ui::new();
+    info!("UI 已创建");
 
     // --- 终端初始化 ---
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;
+    info!("终端已初始化");
 
-    io_thread.handle_response(&mut ui, &mut worker_thread);
-
+    info!("进入主循环");
     // -------- [ 主循环 ] --------
     loop {
         // --- [ 渲染 TUI ]
@@ -55,5 +72,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // --- 恢复终端 ---
     disable_raw_mode()?;
     io::stdout().execute(LeaveAlternateScreen)?;
+    info!("恢复终端");
     Ok(())
 }

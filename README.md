@@ -35,8 +35,17 @@ Oxicodent 是一个 **增强型开发助手**，它通过 **注意力分离** �
 - Worker 线程：负责命令执行
 
 TODO:
-- 实现三贤人架构
-- 增加 Web Search
+> - 实现 MELCHIOR 模块
+    - 实现 MELCHIOR 模块的 `oxicodent-assistant.md` 初始化提示词
+    - 实现 MELCHIOR 模块的 `oxicodent-assistant.md` 的更新提示词
+    - 实现 MELCHIOR 模块与 CASPER 模块的信息交换
+
+- 实现 CASPER 模块
+    - ...
+- 增加 BALTHAZAR 的文档总结（需要增添工具调用和提示词）
+    - ...
+- 增加 Web Search（要解决 MCP 和 API 调用问题）
+    - ...
 ```
 
 ## 技术细节
