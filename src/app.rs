@@ -17,8 +17,6 @@ pub enum AssistantMessage {
 }
 
 pub enum SystemMessage {
-    // 提示词：MELCHIOR, CASPER I, CASPER II
-    Prompt(String, String, String),
     // 命令执行
     ExecCommand(String),
     ExecResult(String),
@@ -45,7 +43,7 @@ pub struct ChatMessage {
     pub content: String,
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, non_camel_case_types)]
 #[derive(Clone)]
 pub enum Model {
     MELCHIOR,
@@ -74,6 +72,10 @@ pub fn get_model() -> &'static Arc<RwLock<Model>> {
         Arc::new(RwLock::new(Model::MELCHIOR))
     })
 }
+
+pub const MELCHIOR_PROMPT: &str = include_str!("../prompt/MELCHIOR_PROMPT.md");
+pub const CASPER_I_PROMPT: &str = include_str!("../prompt/CASPER_I_PROMPT.md");
+pub const CASPER_II_PROMPT: &str = include_str!("../prompt/CASPER_II_PROMPT.md");
 
 pub type AppTerminal = Terminal<CrosstermBackend<Stdout>>;
 

@@ -33,8 +33,11 @@ impl Config {
         path.push(CONFIG_FILENAME);
 
         if path.exists() {
-            // TODO: fs 读取文件错误处理
-            let content = fs::read_to_string(&path).unwrap();
+            let content = match fs::read_to_string(&path) {
+                Err(e) => { return Err(format!("无法读取配置文件 <{}>: {}", &path.to_string_lossy(), e)) }
+                Ok(c) => c
+            };
+
             match serde_json::from_str(&content) {
                 Err(e) =>
                     Err(format!("配置文件 JSON 解析错误 <{}>: {}", &path.to_string_lossy(), e)),
@@ -59,16 +62,4 @@ impl Config {
             Err(format!("已在 ~/{}/{} 创建模板，请配置后重启。", ROOT_DIR, CONFIG_FILENAME))
         }
     }
-}
-
-pub fn get_melchior_prompt() -> &'static str {
-    "MELCHIOR PROMPT FILED BY `mach.lua`"
-}
-
-pub fn get_casper_one_prompt() -> &'static str {
-    "CASPER I PROMPT FILED BY `mach.lua`"
-}
-
-pub fn get_casper_two_prompt() -> &'static str {
-    "CASPER II PROMPT FILED BY `mach.lua`"
 }

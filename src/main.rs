@@ -11,7 +11,7 @@ use crossterm::{
     ExecutableCommand,
 };
 
-use std::{io, fs};
+use std::io;
 use crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
 use crate::config_manager::*;
 use crate::app::*;
@@ -35,18 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;
 
-    // --- 获得当前目录下的条目 ---
-    let mut entries = Vec::new();
-    for entry in fs::read_dir(".")? {
-        let path = entry?.path();
-        entries.push(path.file_name().unwrap().to_string_lossy().to_string());
-    }
-
-    io_thread.send(AppMessage::SysMsg(SystemMessage::Prompt(
-        get_melchior_prompt().into(), get_casper_one_prompt().into(), get_casper_two_prompt().into()
-    )));
     io_thread.handle_response(&mut ui, &mut worker_thread);
-
 
     // -------- [ 主循环 ] --------
     loop {

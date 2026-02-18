@@ -27,8 +27,14 @@ impl IOThread {
             };
 
             let mut melchior_history = Vec::<ChatMessage>::new();
+            melchior_history.push(ChatMessage { role: "prompt".into(), content: MELCHIOR_PROMPT.into() });
+
             let mut casper_one_history = Vec::<ChatMessage>::new();
+            casper_one_history.push(ChatMessage { role: "prompt".into(), content: CASPER_I_PROMPT.into() });
+
             let mut casper_two_history = Vec::<ChatMessage>::new();
+            casper_two_history.push(ChatMessage { role: "prompt".into(), content: CASPER_II_PROMPT.into() });
+
             let mut balthazar_history = Vec::<ChatMessage>::new();
 
             while let Ok(msg) = rx_from_ui.recv() {
@@ -47,12 +53,6 @@ impl IOThread {
                 };
 
                 match msg {
-                    AppMessage::SysMsg(SystemMessage::Prompt(melchior, casper_one, casper_two)) => {
-                        melchior_history.push(ChatMessage { role: "prompt".into(), content: melchior });
-                        casper_one_history.push(ChatMessage { role: "prompt".into(), content: casper_one });
-                        casper_two_history.push(ChatMessage { role: "prompt".into(), content: casper_two });
-                    }
-
                     AppMessage::UserQuery(content) => {
                         let chat_msg = ChatMessage { role: "user".into(), content };
                         history.push(chat_msg.clone());
