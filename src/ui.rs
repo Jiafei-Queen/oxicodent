@@ -2,7 +2,6 @@ use crate::{PendingAction, AppTerminal, get_logo_text};
 
 use ratatui::{text::{Line, Span}, layout::{Constraint, Direction, Layout, Alignment}, widgets::{Block, Borders, Paragraph, Wrap}, style::{Style, Color}, Terminal};
 use ratatui::backend::CrosstermBackend;
-use crate::app::{get_model, Model};
 
 pub struct Ui {
     terminal: AppTerminal,
@@ -103,17 +102,10 @@ impl Ui {
 
             // C. 渲染正在生成的 AI 回复
             if !self.current_ai_response.is_empty() {
-                let model = match get_model().read().unwrap().clone() {
-                    Model::MELCHIOR => "MELCHIOR",
-                    Model::CASPER_I => "CASPER I",
-                    Model::CASPER_II => "CASPER II",
-                    Model::BALTHAZAR => "BALTHAZAR"
-                };
-
                 // 先添加 ASSISTANT: 标签行
                 lines.push(
                     Line::from(Span::styled(
-                        format!("\nASSISTANT: {}", model),
+                        "\nASSISTANT:",
                         Style::default().fg(Color::Cyan),
                     ))
                         .alignment(Alignment::Left),

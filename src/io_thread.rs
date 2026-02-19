@@ -78,8 +78,16 @@ impl IOThread {
 
                 AppMessage::AIMsg(AssistantMessage::TaskComplete) => {
                     let full_msg = ui.current_ai_response.clone();
+
+                    let model = match get_model().read().unwrap().clone() {
+                        Model::MELCHIOR => "MELCHIOR",
+                        Model::CASPER_I => "CASPER-I",
+                        Model::CASPER_II => "CASPER-II",
+                        Model::BALTHAZAR => "BALTHAZAR"
+                    };
+
                     // 刷新屏幕显示
-                    ui.history_display.push_str(&format!("\nASSISTANT:\n{}\n", full_msg));
+                    ui.history_display.push_str(&format!("\nASSISTANT: {}\n{}\n", model, full_msg));
                     // 清空当前正在生成的回复，避免重复显示
                     ui.current_ai_response.clear();
                     // 更新 AGENT 输出上下文
